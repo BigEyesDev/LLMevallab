@@ -1,0 +1,20 @@
+```gitignore
+# Environment
+.env
+venv/
+__pycache__/
+*.pyc
+
+# Data (too large for git)
+data/raw/
+data/processed/
+
+# Outputs
+outputs/results/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+```
