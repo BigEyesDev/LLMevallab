@@ -24,7 +24,7 @@ class EuroParlDataLoader:
     DATASET_NAME = "Helsinki-NLP/europarl"
     DEFAULT_LANGUAGE_PAIR = "de-en"
 
-    def __init__(self, processed_dir: str = "data/processed/", sample_size: int = 20):
+    def __init__(self, processed_dir: str = "data/processed/europarl/", sample_size: int = 20):
         self.processed_dir = Path(processed_dir)
         self.processed_dir.mkdir(parents=True, exist_ok=True)
         self.sample_size = sample_size

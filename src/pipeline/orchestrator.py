@@ -233,12 +233,15 @@ class PipelineOrchestrator:
 
     def _save_results(self, results: list[PipelineResult]) -> Path:
         """
-        Saves results to a timestamped JSON file.
+        Saves results to a timestamped JSON file and updates the latest pointer.
 
         Filename format: results_{task}_{model}_{timestamp}.json
         Example: results_translation_gemini_1_5_pro_20260517_143022.json
 
         Timestamped so consecutive runs never overwrite each other.
+        A companion pointer file (latest_{task}.txt) is also written so that
+        downstream tools can always locate the most recent run without
+        specifying an explicit path.
         """
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         model_name = self.processor.model_name.replace("/", "_").replace("-", "_")
@@ -255,6 +258,11 @@ class PipelineOrchestrator:
             )
 
         logger.info(f"Results saved to {output_path}")
+
+        pointer_path = self.output_dir / f"latest_{self.task.value}.txt"
+        pointer_path.write_text(str(output_path.resolve()), encoding="utf-8")
+        logger.info(f"Latest pointer updated → {pointer_path}")
+
         return output_path
 
 
@@ -306,24 +314,26 @@ if __name__ == "__main__":
 
     # Load documents using the right loader based on task
     if task == PipelineTask.TRANSLATION:
-        #check if data is already downloaded
+        loader = EuroParlDataLoader()
         if not os.path.exists(args.input):
             print(f"Data not found at {args.input}, downloading...")
-            loader = EuroParlDataLoader()
             loader.download_and_prepare()
             args.input = loader.processed_dir / f"europarl_{loader.DEFAULT_LANGUAGE_PAIR}_{loader.sample_size}docs.json"
         else:
             print(f"Data found at {args.input}")
-        try:
-            documents = loader.load_from_disk(args.input)[: args.sample]
-        except Exception as e:
-            logger.error(f"Error loading documents: {e}")
-            raise e
+        documents = loader.load_from_disk(args.input)[: args.sample]
         print(f"Documents loaded: {len(documents)}")
 
     elif task == PipelineTask.SUMMARISATION:
         loader = CNNDailyMailLoader()
+        if not os.path.exists(args.input):
+            print(f"Data not found at {args.input}, downloading...")
+            loader.download_and_prepare()
+            args.input = loader.processed_dir / f"cnn_dailymail_{loader.sample_size}docs.json"
+        else:
+            print(f"Data found at {args.input}")
         documents = loader.load_from_disk(args.input)[: args.sample]
+        print(f"Documents loaded: {len(documents)}")
 
     else:  # FULL — user passes their own multilingual documents
         loader = EuroParlDataLoader()
@@ -332,8 +342,9 @@ if __name__ == "__main__":
     orchestrator = PipelineOrchestrator(processor=processor, config=config, task=task)
     results = orchestrator.run(documents)
 
-    print(f"\n✅ Pipeline complete.")
+    pointer_path = Path(config["paths"]["outputs"]) / f"latest_{task.value}.txt"
+    print(f"\nPipeline complete.")
     print(f"   Task:      {task.value}")
     print(f"   Model:     {processor.model_name}")
     print(f"   Documents: {len(results)}")
-    print(f"   Results:   {config['paths']['outputs']}")
+    print(f"   Results:   {pointer_path.read_text().strip()}")

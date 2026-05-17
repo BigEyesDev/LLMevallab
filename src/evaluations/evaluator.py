@@ -1,0 +1,501 @@
+# src/evaluation/evaluator.py
+
+import json
+import logging
+import statistics
+from datetime import datetime
+from pathlib import Path
+
+import yaml
+
+from src.evaluations.metrics import MetricInput, MetricsRunner
+from src.core.models import EvaluationReport, EvaluationScore
+from src.pipeline.orchestrator import PipelineTask
+
+logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────
+# Task → Metric mapping
+# ─────────────────────────────────────────────────────
+
+# Which metrics apply to which task.
+# This prevents running BLEU on summaries or ROUGE on translations —
+# each metric is only meaningful in the right context.
+TASK_METRICS: dict[PipelineTask, list[str]] = {
+    PipelineTask.TRANSLATION:   ["bleu", "bertscore"],
+    PipelineTask.SUMMARISATION: ["rouge", "bertscore"],
+    PipelineTask.FULL:          ["bleu", "rouge", "bertscore"],
+}
+
+# Which field in the pipeline result to use as the hypothesis per task
+TASK_HYPOTHESIS_FIELD: dict[PipelineTask, str] = {
+    PipelineTask.TRANSLATION:   "translated_text",   # from TranslationResult
+    PipelineTask.SUMMARISATION: "summary",           # from SummaryResult
+    PipelineTask.FULL:          "translated_text",   # default — override as needed
+}
+
+# Which metadata key in DocumentInput holds the ground truth per task
+TASK_GROUND_TRUTH_KEY: dict[PipelineTask, str] = {
+    PipelineTask.TRANSLATION:   "reference_translation",  # EuroParl
+    PipelineTask.SUMMARISATION: "reference_summary",      # CNN/DailyMail
+    PipelineTask.FULL:          "reference_translation",
+}
+
+
+# ─────────────────────────────────────────────────────
+# Result & Ground Truth Loaders
+# ─────────────────────────────────────────────────────
+
+def load_pipeline_results(results_path: str) -> list[dict]:
+    """
+    Loads pipeline output JSON produced by PipelineOrchestrator._save_results().
+
+    Returns:
+        List of raw result dicts (one per document)
+    """
+    with open(results_path, "r", encoding="utf-8") as f:
+        results = json.load(f)
+    logger.info(f"Loaded {len(results)} pipeline results from {results_path}")
+    return results
+
+
+def load_ground_truth(ground_truth_path: str, task: PipelineTask) -> dict[str, str]:
+    """
+    Loads ground truth references from a processed dataset JSON.
+
+    Reads the correct metadata key depending on the task:
+        TRANSLATION   → metadata.reference_translation  (EuroParl)
+        SUMMARISATION → metadata.reference_summary       (CNN/DailyMail)
+
+    Args:
+        ground_truth_path: Path to processed dataset JSON (e.g. europarl_20docs.json)
+        task: Pipeline task — determines which metadata key to read
+
+    Returns:
+        Dict mapping doc_id → reference text
+    """
+    gt_key = TASK_GROUND_TRUTH_KEY[task]
+
+    with open(ground_truth_path, "r", encoding="utf-8") as f:
+        documents = json.load(f)
+
+    ground_truth: dict[str, str] = {}
+    missing = 0
+
+    for doc in documents:
+        doc_id = doc["doc_id"]
+        reference = doc.get("metadata", {}).get(gt_key, "")
+        if not reference:
+            logger.warning(f"[{doc_id}] Missing ground truth key '{gt_key}' — skipping.")
+            missing += 1
+            continue
+        ground_truth[doc_id] = reference
+
+    logger.info(
+        f"Ground truth loaded: {len(ground_truth)} docs "
+        f"(key='{gt_key}', missing={missing})"
+    )
+    return ground_truth
+
+
+# ─────────────────────────────────────────────────────
+# Pairing Logic
+# ─────────────────────────────────────────────────────
+
+def build_metric_inputs(
+    pipeline_results: list[dict],
+    ground_truth: dict[str, str],
+    task: PipelineTask,
+) -> list[MetricInput]:
+    """
+    Pairs pipeline outputs with ground truth references by doc_id.
+
+    This is the critical link between what the LLM produced and what
+    it should have produced. Both sides are keyed by doc_id — if a
+    doc_id exists in results but not in ground truth (or vice versa),
+    it is skipped with a warning.
+
+    Args:
+        pipeline_results: Raw dicts from load_pipeline_results()
+        ground_truth: Dict of {doc_id: reference_text}
+        task: Determines which field to extract as the hypothesis
+
+    Returns:
+        List of MetricInput ready for MetricsRunner
+    """
+    hypothesis_field = TASK_HYPOTHESIS_FIELD[task]
+    inputs: list[MetricInput] = []
+    skipped = 0
+
+    for result in pipeline_results:
+        doc_id = result["document"]["doc_id"]
+
+        # ── Get reference ──────────────────────────────────────────────
+        reference = ground_truth.get(doc_id)
+        if not reference:
+            logger.warning(f"[{doc_id}] No ground truth found — skipping.")
+            skipped += 1
+            continue
+
+        # ── Get hypothesis (LLM output) ────────────────────────────────
+        hypothesis = _extract_hypothesis(result, task, hypothesis_field)
+        if not hypothesis:
+            logger.warning(f"[{doc_id}] No hypothesis found in '{hypothesis_field}' — skipping.")
+            skipped += 1
+            continue
+
+        inputs.append(MetricInput(
+            doc_id=doc_id,
+            hypothesis=hypothesis,
+            reference=reference,
+        ))
+
+    logger.info(f"Paired {len(inputs)} documents for evaluation (skipped={skipped})")
+    return inputs
+
+
+def _extract_hypothesis(result: dict, task: PipelineTask, field: str) -> str:
+    """
+    Extracts the LLM output text from the correct result block.
+
+    For TRANSLATION → looks inside result['translation'][field]
+    For SUMMARISATION → looks inside result['summary'][field]
+
+    Returns empty string if the block or field is missing.
+    """
+    if task == PipelineTask.TRANSLATION:
+        block = result.get("translation") or {}
+        return block.get(field, "")
+
+    elif task == PipelineTask.SUMMARISATION:
+        block = result.get("summary") or {}
+        return block.get(field, "")
+
+    elif task == PipelineTask.FULL:
+        # For FULL, try translation first then summary
+        translation_block = result.get("translation") or {}
+        return translation_block.get(field, "")
+
+    return ""
+
+
+# ─────────────────────────────────────────────────────
+# Aggregation
+# ─────────────────────────────────────────────────────
+
+def aggregate_scores(
+    all_scores: dict[str, list[EvaluationScore]],
+) -> dict[str, dict[str, float]]:
+    """
+    Computes mean, min, max, and std per metric across all documents.
+
+    Corpus-level scores (doc_id == '__corpus__') are excluded from
+    per-document aggregation — they are kept as-is.
+
+    Returns:
+        {
+          "bleu":      {"mean": 0.42, "min": 0.10, "max": 0.75, "std": 0.18},
+          "bertscore": {"mean": 0.88, "min": 0.81, "max": 0.94, "std": 0.03},
+          ...
+        }
+    """
+    aggregate: dict[str, dict[str, float]] = {}
+
+    for metric_name, scores in all_scores.items():
+        # Exclude corpus-level scores from per-doc aggregation
+        doc_scores = [s.score for s in scores if s.doc_id != "__corpus__"]
+
+        if not doc_scores:
+            continue
+
+        aggregate[metric_name] = {
+            "mean":   round(statistics.mean(doc_scores), 4),
+            "median": round(statistics.median(doc_scores), 4),
+            "min":    round(min(doc_scores), 4),
+            "max":    round(max(doc_scores), 4),
+            "std":    round(statistics.stdev(doc_scores) if len(doc_scores) > 1 else 0.0, 4),
+            "n_docs": len(doc_scores),
+        }
+
+    return aggregate
+
+
+# ─────────────────────────────────────────────────────
+# Report Saver
+# ─────────────────────────────────────────────────────
+
+def save_report(
+    report: EvaluationReport,
+    output_dir: str,
+    task: PipelineTask,
+) -> Path:
+    """
+    Saves the evaluation report to a timestamped JSON file.
+
+    Filename format: report_{task}_{model}_{timestamp}.json
+    Example: report_translation_gemini_1_5_pro_20260517_143022.json
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    model_slug = report.model_used.replace("/", "_").replace("-", "_")
+    filename = f"report_{task.value}_{model_slug}_{timestamp}.json"
+    full_path = output_path / filename
+
+    with open(full_path, "w", encoding="utf-8") as f:
+        json.dump(report.model_dump(), f, ensure_ascii=False, indent=2, default=str)
+
+    logger.info(f"Evaluation report saved to {full_path}")
+    return full_path
+
+
+# ─────────────────────────────────────────────────────
+# Main Evaluator
+# ─────────────────────────────────────────────────────
+
+class Evaluator:
+    """
+    Runs evaluation on pipeline outputs against ground truth references.
+
+    Full flow:
+        1. Load pipeline results JSON  (produced by PipelineOrchestrator)
+        2. Load ground truth JSON      (produced by EuroParlLoader or CNNDailyMailLoader)
+        3. Pair results with ground truth by doc_id → MetricInput list
+        4. Run task-appropriate metrics via MetricsRunner
+        5. Aggregate scores (mean, min, max, std)
+        6. Save EvaluationReport to outputs/reports/
+
+    Usage:
+        evaluator = Evaluator(config)
+        report = evaluator.run(
+            results_path="outputs/results/results_translation_gemini_...json",
+            ground_truth_path="data/processed/europarl/europarl_20docs.json",
+            task=PipelineTask.TRANSLATION,
+        )
+    """
+
+    def __init__(self, config: dict):
+        self.config = config
+        self.report_dir = config.get("paths", {}).get("reports", "outputs/reports/")
+        self.bertscore_model = (
+            config.get("evaluation", {}).get("bertscore_model", "microsoft/deberta-xlarge-mnli")
+        )
+
+    def run(
+        self,
+        results_path: str,
+        ground_truth_path: str,
+        task: PipelineTask,
+    ) -> EvaluationReport:
+        """
+        Runs the full evaluation pipeline.
+
+        Args:
+            results_path:      Path to pipeline output JSON
+            ground_truth_path: Path to processed dataset JSON with reference texts
+            task:              PipelineTask — controls which metrics run and
+                               which fields are compared
+
+        Returns:
+            EvaluationReport with per-document scores and aggregates
+        """
+        logger.info(f"Starting evaluation | task={task.value}")
+
+        # ── 1. Load data ───────────────────────────────────────────────
+        pipeline_results = load_pipeline_results(results_path)
+        ground_truth = load_ground_truth(ground_truth_path, task)
+
+        # ── 2. Pair hypothesis ↔ reference by doc_id ───────────────────
+        metric_inputs = build_metric_inputs(pipeline_results, ground_truth, task)
+
+        if not metric_inputs:
+            raise ValueError(
+                "No valid pairs found. Check that doc_ids match between "
+                "results and ground truth, and that the correct task is set."
+            )
+
+        # ── 3. Select and run metrics for this task ────────────────────
+        metrics_to_run = TASK_METRICS[task]
+        logger.info(f"Running metrics: {metrics_to_run}")
+
+        runner = MetricsRunner(
+            metrics=metrics_to_run,
+            bertscore_model=self.bertscore_model,
+        )
+        all_scores = runner.run_all(metric_inputs)
+
+        # ── 4. Aggregate ───────────────────────────────────────────────
+        aggregate = aggregate_scores(all_scores)
+
+        # ── 5. Flatten scores list for the report ─────────────────────
+        flat_scores = [score for scores in all_scores.values() for score in scores]
+
+        # ── 6. Detect model name from results ─────────────────────────
+        model_used = _detect_model(pipeline_results, task)
+
+        # ── 7. Build and save report ───────────────────────────────────
+        report = EvaluationReport(
+            model_used=model_used,
+            scores=flat_scores,
+            aggregate=aggregate,
+        )
+        save_report(report, self.report_dir, task)
+
+        # ── 8. Print summary to console ───────────────────────────────
+        self._print_summary(report, task)
+
+        return report
+
+    def _print_summary(self, report: EvaluationReport, task: PipelineTask) -> None:
+        """Prints a clean summary table to stdout."""
+        print(f"\n{'─' * 55}")
+        print(f"  Evaluation Summary")
+        print(f"  Task:  {task.value.upper()}")
+        print(f"  Model: {report.model_used}")
+        print(f"{'─' * 55}")
+        print(f"  {'Metric':<15} {'Mean':>8} {'Min':>8} {'Max':>8} {'Std':>8}")
+        print(f"  {'─' * 49}")
+        for metric, stats in report.aggregate.items():
+            print(
+                f"  {metric:<15} "
+                f"{stats['mean']:>8.4f} "
+                f"{stats['min']:>8.4f} "
+                f"{stats['max']:>8.4f} "
+                f"{stats['std']:>8.4f}"
+            )
+        print(f"{'─' * 55}\n")
+
+
+def _detect_model(pipeline_results: list[dict], task: PipelineTask) -> str:
+    """Reads model_used from the first available result block."""
+    for result in pipeline_results:
+        if task == PipelineTask.TRANSLATION:
+            block = result.get("translation") or {}
+        elif task == PipelineTask.SUMMARISATION:
+            block = result.get("summary") or {}
+        else:
+            block = result.get("translation") or result.get("summary") or {}
+        model = block.get("model_used", "")
+        if model:
+            return model
+    return "unknown"
+
+
+# ─────────────────────────────────────────────────────
+# Path resolution helpers
+# ─────────────────────────────────────────────────────
+
+# Maps each task to the config datasets key that holds its ground truth.
+_TASK_DATASET_KEY: dict[PipelineTask, str] = {
+    PipelineTask.TRANSLATION:   "europarl",
+    PipelineTask.SUMMARISATION: "cnn_dailymail",
+    PipelineTask.FULL:          "europarl",
+}
+
+
+def resolve_results_path(task: PipelineTask, outputs_dir: str) -> Path:
+    """
+    Returns the path stored in the latest pointer file for the given task.
+
+    The orchestrator writes outputs/results/latest_{task}.txt after every run,
+    containing the absolute path of the most recent results JSON.  This lets
+    downstream tools pick up the newest output without an explicit path.
+
+    Raises:
+        FileNotFoundError: if the pointer file does not exist (no run yet).
+    """
+    pointer = Path(outputs_dir) / f"latest_{task.value}.txt"
+    if not pointer.exists():
+        raise FileNotFoundError(
+            f"No latest-results pointer found at '{pointer}'. "
+            f"Run the orchestrator first, or pass --results explicitly."
+        )
+    return Path(pointer.read_text(encoding="utf-8").strip())
+
+
+def resolve_ground_truth_path(task: PipelineTask, config: dict) -> str:
+    """
+    Returns the ground truth path from config for the given task.
+
+    Reads config["datasets"][dataset_key]["processed_path"].
+
+    Raises:
+        KeyError: if the config section is missing.
+    """
+    dataset_key = _TASK_DATASET_KEY[task]
+    try:
+        return config["datasets"][dataset_key]["processed_path"]
+    except KeyError as exc:
+        raise KeyError(
+            f"config.yaml is missing datasets.{dataset_key}.processed_path "
+            f"(needed for task '{task.value}'). Pass --ground-truth explicitly."
+        ) from exc
+
+
+# ─────────────────────────────────────────────────────
+# CLI Entry Point
+# ─────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import argparse
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+    parser = argparse.ArgumentParser(
+        description="Run LLMEvalForge evaluation on pipeline outputs."
+    )
+    parser.add_argument(
+        "--results",
+        default=None,
+        help=(
+            "Path to pipeline results JSON (from orchestrator). "
+            "If omitted, the latest run is discovered automatically via "
+            "outputs/results/latest_{task}.txt."
+        ),
+    )
+    parser.add_argument(
+        "--ground-truth",
+        default=None,
+        dest="ground_truth",
+        help=(
+            "Path to processed dataset JSON with reference texts. "
+            "If omitted, the path is read from config.yaml "
+            "(datasets.europarl.processed_path or datasets.cnn_dailymail.processed_path)."
+        ),
+    )
+    parser.add_argument(
+        "--task",
+        required=True,
+        choices=[t.value for t in PipelineTask],
+        help="Task type — must match what the pipeline was run with",
+    )
+    parser.add_argument(
+        "--config",
+        default="configs/config.yaml",
+        help="Path to config.yaml (default: configs/config.yaml)",
+    )
+    args = parser.parse_args()
+
+    with open(args.config, "r") as f:
+        config = yaml.safe_load(f)
+
+    task = PipelineTask(args.task)
+
+    results_path = args.results or str(
+        resolve_results_path(task, config.get("paths", {}).get("outputs", "outputs/results/"))
+    )
+    ground_truth_path = args.ground_truth or resolve_ground_truth_path(task, config)
+
+    logger.info(f"Results:      {results_path}")
+    logger.info(f"Ground truth: {ground_truth_path}")
+
+    evaluator = Evaluator(config=config)
+    report = evaluator.run(
+        results_path=results_path,
+        ground_truth_path=ground_truth_path,
+        task=task,
+    )
+
+    print(f"Report saved to: {config.get('paths', {}).get('reports', 'outputs/reports/')}")

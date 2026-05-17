@@ -32,7 +32,7 @@ datasets:
     hf_name: "Helsinki-NLP/europarl"
     language_pair: "de-en"
     sample_size: 20
-    processed_path: "data/processed/europarl/europarl_20docs.json"
+    processed_path: "data/processed/europarl/europarl_de-en_20docs.json"
     ground_truth_key: "reference_translation"   # key inside metadata{}
 
   cnn_dailymail:
@@ -52,10 +52,11 @@ evaluation:
     summarisation:                # metrics applied to summarisation outputs
       - rouge
       - bertscore
-  bertscore_model: "microsoft/deberta-xlarge-mnli"
+  bertscore_model: "microsoft/deberta-base"
   output_path: "outputs/results/"
 
 paths:
   raw_data: "data/raw/"
   processed_data: "data/processed/"
   outputs: "outputs/results/"
+  reports: "outputs/reports/"

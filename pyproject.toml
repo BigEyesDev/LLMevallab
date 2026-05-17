@@ -20,7 +20,7 @@ dependencies = [
     # LLM Providers
     "google-generativeai==0.7.2",
     # Evaluation Metrics
-    "nltk==3.8.1",
+    "nltk>=3.8.2",
     "rouge-score==0.1.2",
     "bert-score==0.3.13",
     "torch==2.3.1",
