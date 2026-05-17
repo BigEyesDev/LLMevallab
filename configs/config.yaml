@@ -8,7 +8,7 @@ models:
   default: "gemini"
 
   gemini:
-    model_id: "gemini-1.5-pro"
+    model_id: "gemini-2.5-flash"
     temperature: 0.1              # low temp = more deterministic, better for extraction
     max_output_tokens: 2048
     timeout_seconds: 30
