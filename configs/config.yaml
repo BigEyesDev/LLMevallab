@@ -23,18 +23,35 @@ models:
     temperature: 0.1
     max_output_tokens: 2048
 
-dataset:
-  name: "europarl"
-  language_pairs:
-    - ["de", "en"]               # German → English (Phase 1)
-  sample_size: 20                # how many docs to use for Phase 1
-  ground_truth_path: "data/ground_truth/europarl_references.json"
+# ─── Datasets ──────────────────────────────────────────────────────
+# Two datasets, two purposes — each matched to the task it benchmarks best
+datasets:
+
+  europarl:
+    purpose: "translation_evaluation"
+    hf_name: "Helsinki-NLP/europarl"
+    language_pair: "de-en"
+    sample_size: 20
+    processed_path: "data/processed/europarl/europarl_20docs.json"
+    ground_truth_key: "reference_translation"   # key inside metadata{}
+
+  cnn_dailymail:
+    purpose: "summarisation_evaluation"
+    hf_name: "abisee/cnn_dailymail"
+    version: "3.0.0"
+    split: "test"
+    sample_size: 20
+    processed_path: "data/processed/cnn_dailymail/cnn_dailymail_20docs.json"
+    ground_truth_key: "reference_summary"       # key inside metadata{}
 
 evaluation:
   metrics:
-    - bleu
-    - rouge
-    - bertscore
+    translation:                  # metrics applied to translation outputs
+      - bleu
+      - bertscore
+    summarisation:                # metrics applied to summarisation outputs
+      - rouge
+      - bertscore
   bertscore_model: "microsoft/deberta-xlarge-mnli"
   output_path: "outputs/results/"
 
