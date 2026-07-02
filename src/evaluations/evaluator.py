@@ -10,7 +10,7 @@ import yaml
 
 from src.core.config import get_processed_path
 from src.evaluations.metrics import MetricInput, MetricsRunner
-from src.core.models import EvaluationReport, EvaluationScore
+from src.core.models import EvaluationReport, EvaluationScore, PipelineResult
 from src.pipeline.orchestrator import PipelineTask
 
 logger = logging.getLogger(__name__)
@@ -304,11 +304,42 @@ class Evaluator:
         """
         logger.info(f"Starting evaluation | task={task.value}")
 
-        # ── 1. Load data ───────────────────────────────────────────────
         pipeline_results = load_pipeline_results(results_path)
-        ground_truth = load_ground_truth(ground_truth_path, task)
+        return self.run_on_results(
+            pipeline_results=[PipelineResult.model_validate(r) for r in pipeline_results],
+            ground_truth_path=ground_truth_path,
+            task=task,
+            save_report=True,
+        )
 
-        # ── 2. Pair hypothesis ↔ reference by doc_id ───────────────────
+    def run_on_results(
+        self,
+        pipeline_results: list[PipelineResult],
+        ground_truth_path: str,
+        task: PipelineTask,
+        *,
+        save_report: bool = False,
+    ) -> EvaluationReport:
+        """Evaluate in-memory pipeline results against ground truth references."""
+        raw_results = [
+            r.model_dump() if isinstance(r, PipelineResult) else r for r in pipeline_results
+        ]
+        return self._evaluate_raw_results(
+            raw_results,
+            ground_truth_path=ground_truth_path,
+            task=task,
+            save_report=save_report,
+        )
+
+    def _evaluate_raw_results(
+        self,
+        pipeline_results: list[dict],
+        ground_truth_path: str,
+        task: PipelineTask,
+        *,
+        save_report: bool,
+    ) -> EvaluationReport:
+        ground_truth = load_ground_truth(ground_truth_path, task)
         metric_inputs = build_metric_inputs(pipeline_results, ground_truth, task)
 
         if not metric_inputs:
@@ -317,7 +348,6 @@ class Evaluator:
                 "results and ground truth, and that the correct task is set."
             )
 
-        # ── 3. Select and run metrics for this task ────────────────────
         metrics_to_run = TASK_METRICS[task]
         logger.info(f"Running metrics: {metrics_to_run}")
 
@@ -326,27 +356,18 @@ class Evaluator:
             bertscore_model=self.bertscore_model,
         )
         all_scores = runner.run_all(metric_inputs)
-
-        # ── 4. Aggregate ───────────────────────────────────────────────
         aggregate = aggregate_scores(all_scores)
-
-        # ── 5. Flatten scores list for the report ─────────────────────
         flat_scores = [score for scores in all_scores.values() for score in scores]
-
-        # ── 6. Detect model name from results ─────────────────────────
         model_used = _detect_model(pipeline_results, task)
 
-        # ── 7. Build and save report ───────────────────────────────────
         report = EvaluationReport(
             model_used=model_used,
             scores=flat_scores,
             aggregate=aggregate,
         )
-        save_report(report, self.report_dir, task)
-
-        # ── 8. Print summary to console ───────────────────────────────
-        self._print_summary(report, task)
-
+        if save_report:
+            save_report(report, self.report_dir, task)
+            self._print_summary(report, task)
         return report
 
     def _print_summary(self, report: EvaluationReport, task: PipelineTask) -> None:
