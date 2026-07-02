@@ -30,7 +30,9 @@ def test_default_model_exists_in_catalog():
     validate_model_key(default_key, config)
 
 
-def test_dataset_sample_sizes_are_100():
+def test_dataset_sample_sizes_match_processed_files():
     config = load_config()
-    assert config["datasets"]["europarl"]["sample_size"] == 100
-    assert config["datasets"]["cnn_dailymail"]["sample_size"] == 100
+    assert config["datasets"]["europarl"]["sample_size"] == 20
+    assert config["datasets"]["cnn_dailymail"]["sample_size"] == 20
+    assert "20docs" in config["datasets"]["europarl"]["processed_path"]
+    assert "20docs" in config["datasets"]["cnn_dailymail"]["processed_path"]

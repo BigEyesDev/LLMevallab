@@ -63,15 +63,16 @@ models:
         output_per_1m: 0.28
 
 # ─── Datasets ──────────────────────────────────────────────────────
-# sample_size: 100 gives more stable benchmark comparisons (higher API cost).
+# sample_size controls how many docs download_and_prepare() saves.
+# Increase for stabler benchmarks, then re-run: python main.py
 datasets:
 
   europarl:
     purpose: "translation_evaluation"
     hf_name: "Helsinki-NLP/europarl"
     language_pair: "de-en"
-    sample_size: 100
-    processed_path: "data/processed/europarl/europarl_de-en_100docs.json"
+    sample_size: 20
+    processed_path: "data/processed/europarl/europarl_de-en_20docs.json"
     ground_truth_key: "reference_translation"
 
   cnn_dailymail:
@@ -79,8 +80,8 @@ datasets:
     hf_name: "abisee/cnn_dailymail"
     version: "3.0.0"
     split: "test"
-    sample_size: 100
-    processed_path: "data/processed/cnn_dailymail/cnn_dailymail_100docs.json"
+    sample_size: 20
+    processed_path: "data/processed/cnn_dailymail/cnn_dailymail_20docs.json"
     ground_truth_key: "reference_summary"
 
 evaluation:
