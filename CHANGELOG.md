@@ -9,9 +9,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- (pending) Factory dispatch unit tests (`feature/factory-cli`)
 - (pending) Benchmark runner, aggregation, report I/O, CLI (`feature/benchmark-runner`)
 - (pending) Integration smoke and e2e tests (`feature/integration`)
+
+## [0.1.4] - 2026-07-02
+
+`feature/factory-cli` — processor factory tests.
+
+### Added
+
+- `tests/test_factory.py` — dispatch tests for Gemini, Claude, and OpenAI-compatible providers
 
 ## [0.1.3] - 2026-07-02
 
@@ -69,7 +76,8 @@ Phase 1 — single-model Gemini pipeline with evaluation metrics.
 - Pydantic DTOs for pipeline and evaluation results
 - Centralised prompts in `configs/prompts.yaml`
 
-[Unreleased]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.3...dev
+[Unreleased]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.4...dev
+[0.1.4]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.0...v0.1.1
