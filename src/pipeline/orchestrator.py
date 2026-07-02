@@ -16,6 +16,8 @@ from src.core.base_processor import BaseDocumentProcessor
 from src.core.models import DocumentInput, PipelineResult
 from src.core.config import get_model_catalog, get_processed_path, load_config, validate_model_key
 from src.providers.gemini_processor import GeminiProcessor
+from src.providers.claude_processor import ClaudeProcessor
+from src.providers.openai_compatible_processor import OpenAICompatibleProcessor
 from src.pipeline.europarl_loader import EuroParlDataLoader
 from src.pipeline.cnn_dailymail_loader import CNNDailyMailLoader
 
@@ -80,10 +82,16 @@ def build_processor(model_key: str, config: dict, prompts: dict) -> BaseDocument
         return GeminiProcessor(api_key=api_key, config=model_config, prompts=prompts)
 
     if provider_type == "claude":
-        raise NotImplementedError("Claude processor not implemented yet (Phase 2).")
+        api_key = os.environ.get(model_config["api_key_env"])
+        if not api_key:
+            raise EnvironmentError(f"{model_config['api_key_env']} not set in environment.")
+        return ClaudeProcessor(api_key=api_key, config=model_config, prompts=prompts)
 
     if provider_type == "openai_compatible":
-        raise NotImplementedError("OpenAI-compatible processor not implemented yet (Phase 2).")
+        api_key = os.environ.get(model_config["api_key_env"])
+        if not api_key:
+            raise EnvironmentError(f"{model_config['api_key_env']} not set in environment.")
+        return OpenAICompatibleProcessor(api_key=api_key, config=model_config, prompts=prompts)
 
     raise ValueError(f"Unknown provider_type: '{provider_type}'.")
 
