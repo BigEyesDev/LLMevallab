@@ -5,6 +5,9 @@
 > Code is written 60-70% by Claude, rest by me - real user. Agenda is to learn more about eval metrics for LLMs and bring more clarity over the course of time!
 >
 > **Author:** [Akash Sachdeva (@BigEyesDev)](https://github.com/BigEyesDev) — Senior Engineer focused on ML, MLOps, and applied LLMs.
+
+**Version:** `0.1.3` — see [CHANGELOG.md](CHANGELOG.md) and [docs/VERSIONING.md](docs/VERSIONING.md). Patch bumps (`0.1.4`, …) on each merged feature branch.
+
 ---
 
 ## Pipeline Overview
