@@ -3,6 +3,8 @@ from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, Field
 
+from src.core.pricing import TokenUsage
+
 
 class DocumentInput(BaseModel):
     """Represents a raw input document before any processing."""
@@ -26,6 +28,8 @@ class ExtractionResult(BaseModel):
     raw_llm_output: str = Field(default="", description="Original LLM response before parsing")
     model_used: str = Field(default="", description="Which model produced this")
     processing_time_ms: float = Field(default=0.0)
+    token_usage: Optional[TokenUsage] = None
+    cost_usd: float = Field(default=0.0)
 
 
 class TranslationResult(BaseModel):
@@ -38,6 +42,8 @@ class TranslationResult(BaseModel):
     translated_text: str
     model_used: str = Field(default="")
     processing_time_ms: float = Field(default=0.0)
+    token_usage: Optional[TokenUsage] = None
+    cost_usd: float = Field(default=0.0)
 
 
 class SummaryResult(BaseModel):
@@ -49,6 +55,8 @@ class SummaryResult(BaseModel):
     action_items: list[str] = Field(default_factory=list, description="Any action items or next steps")
     model_used: str = Field(default="")
     processing_time_ms: float = Field(default=0.0)
+    token_usage: Optional[TokenUsage] = None
+    cost_usd: float = Field(default=0.0)
 
 
 class PipelineResult(BaseModel):
@@ -78,3 +86,25 @@ class EvaluationReport(BaseModel):
     run_timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
     scores: list[EvaluationScore] = Field(default_factory=list)
     aggregate: dict = Field(default_factory=dict, description="Averaged scores per metric")
+
+
+class ModelBenchmarkResult(BaseModel):
+    """Aggregated benchmark metrics for one model on one task."""
+
+    model_key: str
+    model_id: str
+    quality_metrics: dict[str, float] = Field(default_factory=dict)
+    avg_input_tokens: float = 0.0
+    avg_output_tokens: float = 0.0
+    total_cost_usd: float = 0.0
+    avg_latency_ms: float = 0.0
+    n_docs: int = 0
+
+
+class BenchmarkReport(BaseModel):
+    """Side-by-side comparison of multiple models on the same sample."""
+
+    task: str
+    run_timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    sample_size: int
+    results: list[ModelBenchmarkResult] = Field(default_factory=list)
