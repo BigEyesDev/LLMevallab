@@ -12,6 +12,9 @@ data/processed/
 # Outputs
 outputs/results/
 
+# Personal learning logs (local only — not for public repo)
+docs/learning/
+
 # Jupyter checkpoints
 .ipynb_checkpoints/
 
