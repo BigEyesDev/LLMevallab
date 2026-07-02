@@ -35,4 +35,5 @@ dependencies = [
     "ipykernel==6.29.4",
     # Testing
     "pytest==8.2.0",
+    "tenacity>=8.2.0",
 ]
