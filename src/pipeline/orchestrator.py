@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 from src.core.base_processor import BaseDocumentProcessor
 from src.core.models import DocumentInput, PipelineResult
+from src.core.config import get_model_catalog, load_config, validate_model_key
 from src.providers.gemini_processor import GeminiProcessor
 from src.pipeline.europarl_loader import EuroParlDataLoader
 from src.pipeline.cnn_dailymail_loader import CNNDailyMailLoader
@@ -51,14 +52,13 @@ class PipelineTask(str, Enum):
 # Config & Prompt Loaders
 # ─────────────────────────────────────────────────────
 
-def load_config(config_path: str = "configs/config.yaml") -> dict:
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
-
-
 def load_prompts(prompts_path: str = "configs/prompts.yaml") -> dict:
     with open(prompts_path, "r") as f:
         return yaml.safe_load(f)
+
+
+def _dataset_sample_size(config: dict, dataset_key: str) -> int:
+    return config["datasets"][dataset_key]["sample_size"]
 
 
 # ─────────────────────────────────────────────────────
@@ -67,39 +67,25 @@ def load_prompts(prompts_path: str = "configs/prompts.yaml") -> dict:
 
 def build_processor(model_key: str, config: dict, prompts: dict) -> BaseDocumentProcessor:
     """
-    Factory function — returns the right processor for the given model key.
-
-    Adding a new model: add one elif block here.
-    Nothing else in the codebase changes.
-
-    Args:
-        model_key: Key from config.yaml, e.g. 'gemini', 'claude', 'openai'
-        config: Full config dict
-        prompts: Full prompts dict
-
-    Returns:
-        Configured processor instance
+    Factory function — returns the right processor for the given catalog model key.
     """
-    model_config = config["models"][model_key]
+    validate_model_key(model_key, config)
+    model_config = get_model_catalog(config)[model_key]
+    provider_type = model_config["provider_type"]
 
-    if model_key == "gemini":
-        api_key = os.environ.get("GEMINI_API_KEY")
+    if provider_type == "gemini":
+        api_key = os.environ.get(model_config["api_key_env"])
         if not api_key:
-            raise EnvironmentError("GEMINI_API_KEY not set in environment.")
+            raise EnvironmentError(f"{model_config['api_key_env']} not set in environment.")
         return GeminiProcessor(api_key=api_key, config=model_config, prompts=prompts)
 
-    elif model_key == "claude":
-        # Phase 2
-        print("Claude processor not implemented yet")
-        pass
+    if provider_type == "claude":
+        raise NotImplementedError("Claude processor not implemented yet (Phase 2).")
 
-    elif model_key == "openai":
-        # Phase 2
-        print("OpenAI processor not implemented yet")
-        pass
+    if provider_type == "openai_compatible":
+        raise NotImplementedError("OpenAI-compatible processor not implemented yet (Phase 2).")
 
-    else:
-        raise ValueError(f"Unknown model key: '{model_key}'. Add it to build_processor().")
+    raise ValueError(f"Unknown provider_type: '{provider_type}'.")
 
 
 # ─────────────────────────────────────────────────────
@@ -278,9 +264,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the LLMEvalForge document processing pipeline.")
     parser.add_argument(
         "--model",
-        default="gemini",
-        choices=["gemini", "claude", "openai"],
-        help="Model to use",
+        default=None,
+        help="Model catalog key from config.yaml (default: models.default)",
     )
     parser.add_argument(
         "--task",
@@ -308,13 +293,14 @@ if __name__ == "__main__":
 
     config = load_config()
     prompts = load_prompts()
+    model_key = args.model or config["models"]["default"]
 
-    processor = build_processor(args.model, config, prompts)
+    processor = build_processor(model_key, config, prompts)
     task = PipelineTask(args.task)
 
     # Load documents using the right loader based on task
     if task == PipelineTask.TRANSLATION:
-        loader = EuroParlDataLoader()
+        loader = EuroParlDataLoader(sample_size=_dataset_sample_size(config, "europarl"))
         if not os.path.exists(args.input):
             print(f"Data not found at {args.input}, downloading...")
             loader.download_and_prepare()
@@ -325,7 +311,7 @@ if __name__ == "__main__":
         print(f"Documents loaded: {len(documents)}")
 
     elif task == PipelineTask.SUMMARISATION:
-        loader = CNNDailyMailLoader()
+        loader = CNNDailyMailLoader(sample_size=_dataset_sample_size(config, "cnn_dailymail"))
         if not os.path.exists(args.input):
             print(f"Data not found at {args.input}, downloading...")
             loader.download_and_prepare()
