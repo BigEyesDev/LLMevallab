@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from src.core.base_processor import BaseDocumentProcessor
 from src.core.models import DocumentInput, PipelineResult
-from src.core.config import get_model_catalog, load_config, validate_model_key
+from src.core.config import get_model_catalog, get_processed_path, load_config, validate_model_key
 from src.providers.gemini_processor import GeminiProcessor
 from src.pipeline.europarl_loader import EuroParlDataLoader
 from src.pipeline.cnn_dailymail_loader import CNNDailyMailLoader
@@ -301,10 +301,11 @@ if __name__ == "__main__":
     # Load documents using the right loader based on task
     if task == PipelineTask.TRANSLATION:
         loader = EuroParlDataLoader(sample_size=_dataset_sample_size(config, "europarl"))
+        default_input = get_processed_path(config, "europarl")
         if not os.path.exists(args.input):
             print(f"Data not found at {args.input}, downloading...")
             loader.download_and_prepare()
-            args.input = loader.processed_dir / f"europarl_{loader.DEFAULT_LANGUAGE_PAIR}_{loader.sample_size}docs.json"
+            args.input = default_input
         else:
             print(f"Data found at {args.input}")
         documents = loader.load_from_disk(args.input)[: args.sample]
@@ -312,10 +313,11 @@ if __name__ == "__main__":
 
     elif task == PipelineTask.SUMMARISATION:
         loader = CNNDailyMailLoader(sample_size=_dataset_sample_size(config, "cnn_dailymail"))
+        default_input = get_processed_path(config, "cnn_dailymail")
         if not os.path.exists(args.input):
             print(f"Data not found at {args.input}, downloading...")
             loader.download_and_prepare()
-            args.input = loader.processed_dir / f"cnn_dailymail_{loader.sample_size}docs.json"
+            args.input = default_input
         else:
             print(f"Data found at {args.input}")
         documents = loader.load_from_disk(args.input)[: args.sample]

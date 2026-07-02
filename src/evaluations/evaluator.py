@@ -8,6 +8,7 @@ from pathlib import Path
 
 import yaml
 
+from src.core.config import get_processed_path
 from src.evaluations.metrics import MetricInput, MetricsRunner
 from src.core.models import EvaluationReport, EvaluationScore
 from src.pipeline.orchestrator import PipelineTask
@@ -416,22 +417,9 @@ def resolve_results_path(task: PipelineTask, outputs_dir: str) -> Path:
 
 
 def resolve_ground_truth_path(task: PipelineTask, config: dict) -> str:
-    """
-    Returns the ground truth path from config for the given task.
-
-    Reads config["datasets"][dataset_key]["processed_path"].
-
-    Raises:
-        KeyError: if the config section is missing.
-    """
+    """Returns the processed dataset path derived from sample_size in config."""
     dataset_key = _TASK_DATASET_KEY[task]
-    try:
-        return config["datasets"][dataset_key]["processed_path"]
-    except KeyError as exc:
-        raise KeyError(
-            f"config.yaml is missing datasets.{dataset_key}.processed_path "
-            f"(needed for task '{task.value}'). Pass --ground-truth explicitly."
-        ) from exc
+    return get_processed_path(config, dataset_key)
 
 
 # ─────────────────────────────────────────────────────
@@ -461,8 +449,8 @@ if __name__ == "__main__":
         dest="ground_truth",
         help=(
             "Path to processed dataset JSON with reference texts. "
-            "If omitted, the path is read from config.yaml "
-            "(datasets.europarl.processed_path or datasets.cnn_dailymail.processed_path)."
+            "If omitted, the path is derived from config.yaml sample_size "
+            "(datasets.europarl or datasets.cnn_dailymail)."
         ),
     )
     parser.add_argument(

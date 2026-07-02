@@ -56,3 +56,31 @@ def validate_model_key(model_key: str, config: dict) -> None:
     if model_key not in catalog:
         valid = ", ".join(sorted(catalog))
         raise ValueError(f"Unknown model key '{model_key}'. Valid keys: {valid}")
+
+
+def get_dataset_config(config: dict, dataset_key: str) -> dict:
+    try:
+        return config["datasets"][dataset_key]
+    except KeyError as exc:
+        raise KeyError(f"config.yaml is missing datasets.{dataset_key}") from exc
+
+
+def europarl_processed_path(sample_size: int, language_pair: str = "de-en") -> str:
+    return f"data/processed/europarl/europarl_{language_pair}_{sample_size}docs.json"
+
+
+def cnn_dailymail_processed_path(sample_size: int) -> str:
+    return f"data/processed/cnn_dailymail/cnn_dailymail_{sample_size}docs.json"
+
+
+def get_processed_path(config: dict, dataset_key: str) -> str:
+    """Derive processed dataset JSON path from sample_size (and language_pair for EuroParl)."""
+    ds = get_dataset_config(config, dataset_key)
+    sample_size = ds["sample_size"]
+
+    if dataset_key == "europarl":
+        return europarl_processed_path(sample_size, ds["language_pair"])
+    if dataset_key == "cnn_dailymail":
+        return cnn_dailymail_processed_path(sample_size)
+
+    raise ValueError(f"Unknown dataset key: '{dataset_key}'")

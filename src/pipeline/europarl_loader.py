@@ -6,6 +6,7 @@ from typing import Generator
 from datasets import load_dataset
 from tqdm import tqdm
 
+from src.core.config import europarl_processed_path
 from src.core.models import DocumentInput
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,8 @@ class EuroParlDataLoader:
             )
             documents.append(doc.model_dump())
 
-        output_path = self.processed_dir / f"europarl_{language_pair}_{self.sample_size}docs.json"
+        output_path = Path(europarl_processed_path(self.sample_size, language_pair))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(documents, f, ensure_ascii=False, indent=2)

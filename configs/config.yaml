@@ -64,7 +64,7 @@ models:
 
 # ─── Datasets ──────────────────────────────────────────────────────
 # sample_size controls how many docs download_and_prepare() saves.
-# Increase for stabler benchmarks, then re-run: python main.py
+# processed_path is derived automatically — change sample_size, re-run python main.py.
 datasets:
 
   europarl:
@@ -72,7 +72,6 @@ datasets:
     hf_name: "Helsinki-NLP/europarl"
     language_pair: "de-en"
     sample_size: 20
-    processed_path: "data/processed/europarl/europarl_de-en_20docs.json"
     ground_truth_key: "reference_translation"
 
   cnn_dailymail:
@@ -81,7 +80,6 @@ datasets:
     version: "3.0.0"
     split: "test"
     sample_size: 20
-    processed_path: "data/processed/cnn_dailymail/cnn_dailymail_20docs.json"
     ground_truth_key: "reference_summary"
 
 evaluation:

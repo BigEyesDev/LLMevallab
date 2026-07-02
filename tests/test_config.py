@@ -1,6 +1,9 @@
 import pytest
 
 from src.core.config import (
+    cnn_dailymail_processed_path,
+    europarl_processed_path,
+    get_processed_path,
     load_config,
     validate_api_keys_documented,
     validate_model_catalog,
@@ -30,9 +33,16 @@ def test_default_model_exists_in_catalog():
     validate_model_key(default_key, config)
 
 
-def test_dataset_sample_sizes_match_processed_files():
+def test_processed_path_derived_from_sample_size():
     config = load_config()
-    assert config["datasets"]["europarl"]["sample_size"] == 20
-    assert config["datasets"]["cnn_dailymail"]["sample_size"] == 20
-    assert "20docs" in config["datasets"]["europarl"]["processed_path"]
-    assert "20docs" in config["datasets"]["cnn_dailymail"]["processed_path"]
+    assert get_processed_path(config, "europarl") == europarl_processed_path(20, "de-en")
+    assert get_processed_path(config, "cnn_dailymail") == cnn_dailymail_processed_path(20)
+
+
+def test_processed_path_updates_when_sample_size_changes():
+    config = load_config()
+    config["datasets"]["europarl"]["sample_size"] = 100
+    config["datasets"]["cnn_dailymail"]["sample_size"] = 50
+
+    assert get_processed_path(config, "europarl") == "data/processed/europarl/europarl_de-en_100docs.json"
+    assert get_processed_path(config, "cnn_dailymail") == "data/processed/cnn_dailymail/cnn_dailymail_50docs.json"
