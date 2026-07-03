@@ -7,6 +7,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.core.pricing import TokenUsage
 from src.core.time import utc_now_iso
 
+# Default per-task truncation limits (chars).  These are used when no config is
+# provided — the config.yaml values take precedence at runtime.
+DEFAULT_TASK_TRUNCATION_LIMITS: dict[str, int] = {
+    "translation": 2000,
+    "summarisation": 8000,
+    "full": 4000,
+}
+
 
 # Ground-truth metadata key used per task — shared by orchestrator and evaluator.
 TASK_GROUND_TRUTH_KEY: dict[str, str] = {
@@ -75,6 +83,15 @@ class SummaryResult(AppModel):
     cost_usd: float = Field(default=0.0)
 
 
+class TruncationInfo(AppModel):
+    """Records how much of a document was actually sent to the LLM."""
+
+    chars_original: int = Field(..., description="Character length of the raw document before truncation")
+    chars_sent: int = Field(..., description="Character length actually sent to the LLM (≤ chars_original)")
+    was_truncated: bool = Field(..., description="True when chars_sent < chars_original")
+    limit_applied: int = Field(..., description="The per-task max_document_length limit that was in effect")
+
+
 class PipelineResult(AppModel):
     """Complete result for one document, all steps combined."""
 
@@ -84,6 +101,10 @@ class PipelineResult(AppModel):
     summary: Optional[SummaryResult] = None
     total_processing_time_ms: float = Field(default=0.0)
     run_timestamp: str = Field(default_factory=utc_now_iso)
+    truncation: Optional[TruncationInfo] = Field(
+        default=None,
+        description="Truncation metadata — populated when a per-task length limit is applied",
+    )
 
 
 class EvaluationScore(AppModel):

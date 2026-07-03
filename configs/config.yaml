@@ -1,8 +1,17 @@
 pipeline:
   target_language: "en"
-  max_document_length: 2000       # chars — truncate longer docs for cost control
+  max_document_length: 2000       # chars — default truncation limit (overridden per task below)
   batch_size: 5                   # documents per run
   save_raw_llm_output: true       # useful for debugging
+
+  # Per-task truncation limits (chars).
+  # Translation documents are short EU parliament sentences; 2000 chars is plenty.
+  # Summarisation documents are full news articles; 8000 chars preserves enough context
+  # for ROUGE/BERTScore to be meaningful while keeping API costs predictable.
+  max_document_length_per_task:
+    translation: 2000
+    summarisation: 8000
+    full: 4000
 
 models:
   default: "gemini-2.5-flash"
