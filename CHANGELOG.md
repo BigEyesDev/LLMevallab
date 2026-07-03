@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-07-03
+
+### Fixed
+
+- Pydantic `model_*` field warnings via shared `AppModel` base DTO
+- Deprecated `datetime.utcnow()` replaced with centralized UTC helpers in `src/core/time.py`
+
+### Added
+
+- `tests/test_time.py` for UTC timestamp utilities
+
 ## [0.1.6] - 2026-07-02
 
 `feature/integration` — Phase 2 complete.
@@ -94,7 +105,8 @@ Phase 1 — single-model Gemini pipeline with evaluation metrics.
 - Pydantic DTOs for pipeline and evaluation results
 - Centralised prompts in `configs/prompts.yaml`
 
-[Unreleased]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.6...dev
+[Unreleased]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.7...dev
+[0.1.7]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.3...v0.1.4

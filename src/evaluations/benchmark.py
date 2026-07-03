@@ -6,7 +6,6 @@ import argparse
 import json
 import logging
 import statistics
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -14,6 +13,7 @@ import yaml
 
 from src import __version__
 from src.core.config import get_model_catalog, get_processed_path, load_config, validate_model_key
+from src.core.time import utc_timestamp
 from src.core.models import (
     BenchmarkReport,
     DocumentInput,
@@ -105,7 +105,7 @@ def save_benchmark_report(
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = utc_timestamp()
     json_path = out / f"benchmark_{report.task}_{timestamp}.json"
     csv_path = out / f"benchmark_{report.task}_{timestamp}.csv"
 

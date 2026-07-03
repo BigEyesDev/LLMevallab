@@ -1,12 +1,20 @@
 from __future__ import annotations
-from datetime import datetime
+
 from typing import Optional
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.core.pricing import TokenUsage
+from src.core.time import utc_now_iso
 
 
-class DocumentInput(BaseModel):
+class AppModel(BaseModel):
+    """Project DTO base — allows model_* field names used across the domain."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+
+class DocumentInput(AppModel):
     """Represents a raw input document before any processing."""
 
     doc_id: str = Field(..., description="Unique identifier for the document")
@@ -16,7 +24,7 @@ class DocumentInput(BaseModel):
     metadata: dict = Field(default_factory=dict, description="Any extra metadata")
 
 
-class ExtractionResult(BaseModel):
+class ExtractionResult(AppModel):
     """Structured output from the extraction step."""
 
     doc_id: str
@@ -32,7 +40,7 @@ class ExtractionResult(BaseModel):
     cost_usd: float = Field(default=0.0)
 
 
-class TranslationResult(BaseModel):
+class TranslationResult(AppModel):
     """Output from the translation step."""
 
     doc_id: str
@@ -46,7 +54,7 @@ class TranslationResult(BaseModel):
     cost_usd: float = Field(default=0.0)
 
 
-class SummaryResult(BaseModel):
+class SummaryResult(AppModel):
     """Output from the summarisation step."""
 
     doc_id: str
@@ -59,7 +67,7 @@ class SummaryResult(BaseModel):
     cost_usd: float = Field(default=0.0)
 
 
-class PipelineResult(BaseModel):
+class PipelineResult(AppModel):
     """Complete result for one document, all steps combined."""
 
     document: DocumentInput
@@ -67,10 +75,10 @@ class PipelineResult(BaseModel):
     translation: Optional[TranslationResult] = None
     summary: Optional[SummaryResult] = None
     total_processing_time_ms: float = Field(default=0.0)
-    run_timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    run_timestamp: str = Field(default_factory=utc_now_iso)
 
 
-class EvaluationScore(BaseModel):
+class EvaluationScore(AppModel):
     """Scores for one metric on one document."""
 
     doc_id: str
@@ -79,16 +87,16 @@ class EvaluationScore(BaseModel):
     metadata: dict = Field(default_factory=dict, description="Extra info like precision/recall breakdown")
 
 
-class EvaluationReport(BaseModel):
+class EvaluationReport(AppModel):
     """Full evaluation report across all documents and metrics."""
 
     model_used: str
-    run_timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    run_timestamp: str = Field(default_factory=utc_now_iso)
     scores: list[EvaluationScore] = Field(default_factory=list)
     aggregate: dict = Field(default_factory=dict, description="Averaged scores per metric")
 
 
-class ModelBenchmarkResult(BaseModel):
+class ModelBenchmarkResult(AppModel):
     """Aggregated benchmark metrics for one model on one task."""
 
     model_key: str
@@ -101,10 +109,10 @@ class ModelBenchmarkResult(BaseModel):
     n_docs: int = 0
 
 
-class BenchmarkReport(BaseModel):
+class BenchmarkReport(AppModel):
     """Side-by-side comparison of multiple models on the same sample."""
 
     task: str
-    run_timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    run_timestamp: str = Field(default_factory=utc_now_iso)
     sample_size: int
     results: list[ModelBenchmarkResult] = Field(default_factory=list)

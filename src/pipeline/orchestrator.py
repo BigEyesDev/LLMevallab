@@ -6,13 +6,13 @@ import os
 import time
 from enum import Enum
 from pathlib import Path
-from datetime import datetime
 
 import yaml
 from dotenv import load_dotenv
 from tqdm import tqdm
 
 from src.core.base_processor import BaseDocumentProcessor
+from src.core.time import utc_timestamp
 from src.core.models import DocumentInput, PipelineResult
 from src.core.config import get_model_catalog, get_processed_path, load_config, validate_model_key
 from src.providers.gemini_processor import GeminiProcessor
@@ -237,7 +237,7 @@ class PipelineOrchestrator:
         downstream tools can always locate the most recent run without
         specifying an explicit path.
         """
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = utc_timestamp()
         model_name = self.processor.model_name.replace("/", "_").replace("-", "_")
         filename = f"results_{self.task.value}_{model_name}_{timestamp}.json"
         output_path = self.output_dir / filename

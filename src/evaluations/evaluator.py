@@ -3,10 +3,12 @@
 import json
 import logging
 import statistics
-from datetime import datetime
 from pathlib import Path
 
 import yaml
+
+from src.core.config import get_processed_path
+from src.core.time import utc_timestamp
 
 from src.core.config import get_processed_path
 from src.evaluations.metrics import MetricInput, MetricsRunner
@@ -240,7 +242,7 @@ def save_report(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = utc_timestamp()
     model_slug = report.model_used.replace("/", "_").replace("-", "_")
     filename = f"report_{task.value}_{model_slug}_{timestamp}.json"
     full_path = output_path / filename
