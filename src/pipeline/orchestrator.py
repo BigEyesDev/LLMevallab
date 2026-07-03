@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from enum import Enum
 from pathlib import Path
 
@@ -12,9 +13,10 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 
 from src.core.base_processor import BaseDocumentProcessor
-from src.core.time import utc_timestamp
-from src.core.models import DocumentInput, PipelineResult
+from src.core.time import utc_timestamp, utc_now_iso
+from src.core.models import DocumentInput, PipelineResult, RunManifest, TASK_GROUND_TRUTH_KEY
 from src.core.config import get_model_catalog, get_processed_path, load_config, validate_model_key
+from src.core.provenance import dataset_hash, ground_truth_hash, config_hash, config_snapshot
 from src.providers.gemini_processor import GeminiProcessor
 from src.providers.claude_processor import ClaudeProcessor
 from src.providers.openai_compatible_processor import OpenAICompatibleProcessor
@@ -110,11 +112,11 @@ class PipelineOrchestrator:
         PipelineTask.SUMMARISATION → extract + summarise
         PipelineTask.FULL          → extract + translate + summarise
 
-    This ensures EuroParl documents are only translated (not pointlessly
-    summarised as EU parliament sentences), and CNN/DailyMail documents
-    are only summarised (not translated — they're already English).
-
-    Results are saved as timestamped JSON for downstream evaluation.
+    Every run writes a timestamped results JSON **and** a companion
+    ``{stem}.manifest.json`` recording dataset/ground-truth hashes,
+    doc_ids, config snapshot, and the path to the results file.
+    The manifest enables reproducible re-evaluation and hash-verified
+    ground truth matching — see Priority 1 in PHASE_2B.md.
     """
 
     def __init__(
@@ -122,16 +124,32 @@ class PipelineOrchestrator:
         processor: BaseDocumentProcessor,
         config: dict,
         task: PipelineTask = PipelineTask.TRANSLATION,
+        *,
+        model_key: str | None = None,
+        dataset_path: str | None = None,
+        ground_truth_path: str | None = None,
     ):
         """
         Args:
-            processor: Any BaseDocumentProcessor implementation (Gemini, Claude, etc.)
-            config: Loaded config.yaml dict
-            task: Controls which pipeline steps run — see PipelineTask
+            processor:          Any BaseDocumentProcessor implementation.
+            config:             Loaded config.yaml dict.
+            task:               Controls which pipeline steps run — see PipelineTask.
+            model_key:          Catalog key (e.g. 'gemini-2.5-flash') — used for
+                                config hashing in the manifest.  Optional for
+                                backward-compatibility; omit in BenchmarkRunner paths
+                                that do not need strict manifest hash tracking.
+            dataset_path:       Path to the input documents JSON — stored in
+                                manifest and hashed.  Optional for backward-compat.
+            ground_truth_path:  Path to the ground truth dataset JSON — stored in
+                                manifest and hashed.  Defaults to ``dataset_path``
+                                when both point to the same file (our current loaders).
         """
         self.processor = processor
         self.config = config
         self.task = task
+        self.model_key = model_key
+        self.dataset_path = dataset_path
+        self.ground_truth_path = ground_truth_path or dataset_path
         self.output_dir = Path(config["paths"]["outputs"])
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -227,17 +245,19 @@ class PipelineOrchestrator:
 
     def _save_results(self, results: list[PipelineResult]) -> Path:
         """
-        Saves results to a timestamped JSON file and updates the latest pointer.
+        Saves results to a timestamped JSON file, updates the latest pointer,
+        and writes a companion ``{stem}.manifest.json`` for provenance tracking.
 
         Filename format: results_{task}_{model}_{timestamp}.json
         Example: results_translation_gemini_1_5_pro_20260517_143022.json
 
         Timestamped so consecutive runs never overwrite each other.
         A companion pointer file (latest_{task}.txt) is also written so that
-        downstream tools can always locate the most recent run without
-        specifying an explicit path.
+        downstream tools can locate the most recent run without specifying an
+        explicit path (use ``--latest`` flag on the evaluator CLI).
         """
         timestamp = utc_timestamp()
+        run_id = f"{timestamp}_{uuid.uuid4().hex[:6]}"
         model_name = self.processor.model_name.replace("/", "_").replace("-", "_")
         filename = f"results_{self.task.value}_{model_name}_{timestamp}.json"
         output_path = self.output_dir / filename
@@ -257,7 +277,86 @@ class PipelineOrchestrator:
         pointer_path.write_text(str(output_path.resolve()), encoding="utf-8")
         logger.info(f"Latest pointer updated → {pointer_path}")
 
+        self._write_manifest(results, run_id, output_path)
+
         return output_path
+
+    def _write_manifest(
+        self,
+        results: list[PipelineResult],
+        run_id: str,
+        results_path: Path,
+    ) -> Path | None:
+        """
+        Writes ``{results_stem}.manifest.json`` alongside the results file.
+
+        Hash computation is skipped gracefully when ``dataset_path`` or
+        ``model_key`` were not provided (e.g. BenchmarkRunner paths).
+        In that case, hash fields are empty strings, signalling that
+        hash verification is not available for this run.
+        """
+        from src import __version__
+
+        doc_ids = [r.document.doc_id for r in results]
+        sample_indices = list(range(len(results)))
+
+        d_hash = ""
+        gt_hash = ""
+        c_hash = ""
+        c_snapshot: dict = {}
+        gt_path = self.ground_truth_path or ""
+
+        if self.dataset_path and Path(self.dataset_path).exists():
+            try:
+                d_hash = dataset_hash(self.dataset_path)
+            except Exception as e:
+                logger.warning(f"dataset_hash failed: {e}")
+
+        if self.ground_truth_path and Path(self.ground_truth_path).exists() and doc_ids:
+            try:
+                gt_key = TASK_GROUND_TRUTH_KEY.get(self.task.value, "")
+                if gt_key:
+                    gt_hash = ground_truth_hash(doc_ids, self.ground_truth_path, gt_key)
+            except Exception as e:
+                logger.warning(f"ground_truth_hash failed: {e}")
+
+        if self.model_key:
+            try:
+                c_hash = config_hash(self.config, self.model_key)
+                c_snapshot = config_snapshot(self.config, self.model_key)
+            except Exception as e:
+                logger.warning(f"config_hash failed: {e}")
+
+        catalog = get_model_catalog(self.config)
+        model_id = ""
+        if self.model_key and self.model_key in catalog:
+            model_id = catalog[self.model_key].get("model_id", "")
+
+        manifest = RunManifest(
+            run_id=run_id,
+            app_version=__version__,
+            task=self.task.value,
+            model_key=self.model_key or "",
+            model_id=model_id,
+            dataset_path=self.dataset_path or "",
+            dataset_hash=d_hash,
+            doc_ids=doc_ids,
+            sample_size=len(results),
+            sample_indices=sample_indices,
+            ground_truth_path=gt_path,
+            ground_truth_hash=gt_hash,
+            config_hash=c_hash,
+            config_snapshot=c_snapshot,
+            results_path=str(results_path.resolve()),
+            created_at=utc_now_iso(),
+        )
+
+        manifest_path = results_path.with_suffix("").with_suffix(".manifest.json")
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest.model_dump(), f, ensure_ascii=False, indent=2, default=str)
+
+        logger.info(f"RunManifest written → {manifest_path}")
+        return manifest_path
 
 
 # ─────────────────────────────────────────────────────
@@ -286,16 +385,35 @@ if __name__ == "__main__":
             "'full' for both steps"
         ),
     )
-    parser.add_argument(
-        "--input",
-        required=True,
-        help="Path to processed documents JSON (from europarl_loader or cnn_dailymail_loader)",
+
+    # Input source — mutually exclusive: catalog key or explicit path
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
+        "--dataset",
+        dest="dataset_key",
+        help=(
+            "Dataset catalog key from config.yaml (e.g. 'cnn_dailymail', 'europarl'). "
+            "Derives the input path from config and enables full hash tracking in the manifest."
+        ),
     )
+    input_group.add_argument(
+        "--input",
+        help="Explicit path to processed documents JSON. Use --dataset for full provenance.",
+    )
+
     parser.add_argument(
         "--sample",
         type=int,
         default=5,
         help="Number of documents to process (default: 5)",
+    )
+    parser.add_argument(
+        "--evaluate",
+        action="store_true",
+        help=(
+            "Chain evaluation immediately after inference using the manifest. "
+            "Reads ground truth path and hashes from the manifest — no manual paths needed."
+        ),
     )
     args = parser.parse_args()
 
@@ -306,41 +424,61 @@ if __name__ == "__main__":
     processor = build_processor(model_key, config, prompts)
     task = PipelineTask(args.task)
 
+    dataset_key_resolved: str | None = None
+    input_path: str = ""
+
+    if args.dataset_key:
+        # --dataset path: resolve from catalog, enables full manifest hashing
+        dataset_key_resolved = args.dataset_key
+        input_path = get_processed_path(config, dataset_key_resolved)
+        if not os.path.exists(input_path):
+            print(f"Data not found at {input_path}. Download it first with the appropriate loader.")
+            raise SystemExit(1)
+    else:
+        # --input path: explicit, backward-compat
+        input_path = args.input
+        if not os.path.exists(input_path):
+            print(f"Input file not found: {input_path}")
+            raise SystemExit(1)
+
     # Load documents using the right loader based on task
     if task == PipelineTask.TRANSLATION:
         loader = EuroParlDataLoader(sample_size=_dataset_sample_size(config, "europarl"))
-        default_input = get_processed_path(config, "europarl")
-        if not os.path.exists(args.input):
-            print(f"Data not found at {args.input}, downloading...")
-            loader.download_and_prepare()
-            args.input = default_input
-        else:
-            print(f"Data found at {args.input}")
-        documents = loader.load_from_disk(args.input)[: args.sample]
-        print(f"Documents loaded: {len(documents)}")
-
     elif task == PipelineTask.SUMMARISATION:
         loader = CNNDailyMailLoader(sample_size=_dataset_sample_size(config, "cnn_dailymail"))
-        default_input = get_processed_path(config, "cnn_dailymail")
-        if not os.path.exists(args.input):
-            print(f"Data not found at {args.input}, downloading...")
-            loader.download_and_prepare()
-            args.input = default_input
-        else:
-            print(f"Data found at {args.input}")
-        documents = loader.load_from_disk(args.input)[: args.sample]
-        print(f"Documents loaded: {len(documents)}")
-
-    else:  # FULL — user passes their own multilingual documents
+    else:
         loader = EuroParlDataLoader()
-        documents = loader.load_from_disk(args.input)[: args.sample]
 
-    orchestrator = PipelineOrchestrator(processor=processor, config=config, task=task)
+    documents = loader.load_from_disk(input_path)[: args.sample]
+    print(f"Documents loaded: {len(documents)}")
+
+    orchestrator = PipelineOrchestrator(
+        processor=processor,
+        config=config,
+        task=task,
+        model_key=model_key,
+        dataset_path=input_path,
+        ground_truth_path=input_path,  # same file for our current datasets
+    )
     results = orchestrator.run(documents)
 
-    pointer_path = Path(config["paths"]["outputs"]) / f"latest_{task.value}.txt"
+    output_dir = Path(config["paths"]["outputs"])
+    pointer_path = output_dir / f"latest_{task.value}.txt"
+    results_path = pointer_path.read_text().strip()
+    manifest_path = results_path.replace(".json", ".manifest.json")
+
     print(f"\nPipeline complete.")
     print(f"   Task:      {task.value}")
     print(f"   Model:     {processor.model_name}")
     print(f"   Documents: {len(results)}")
-    print(f"   Results:   {pointer_path.read_text().strip()}")
+    print(f"   Results:   {results_path}")
+    print(f"   Manifest:  {manifest_path}")
+
+    if args.evaluate:
+        import warnings
+        from src.evaluations.evaluator import Evaluator
+
+        evaluator = Evaluator(config=config)
+        print(f"\nRunning evaluation from manifest: {manifest_path}")
+        report = evaluator.run_on_manifest(manifest_path)
+        print(f"Evaluation complete. run_id={report.run_id}")

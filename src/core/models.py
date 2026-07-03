@@ -8,6 +8,14 @@ from src.core.pricing import TokenUsage
 from src.core.time import utc_now_iso
 
 
+# Ground-truth metadata key used per task — shared by orchestrator and evaluator.
+TASK_GROUND_TRUTH_KEY: dict[str, str] = {
+    "translation":   "reference_translation",
+    "summarisation": "reference_summary",
+    "full":          "reference_translation",
+}
+
+
 class AppModel(BaseModel):
     """Project DTO base — allows model_* field names used across the domain."""
 
@@ -87,6 +95,40 @@ class EvaluationScore(AppModel):
     metadata: dict = Field(default_factory=dict, description="Extra info like precision/recall breakdown")
 
 
+class RunManifest(AppModel):
+    """Provenance record written alongside every pipeline results file.
+
+    Every orchestrator run writes one ``{results_stem}.manifest.json``.
+    Evaluator reads this manifest to verify ground truth integrity before scoring.
+    """
+
+    run_id: str = Field(..., description="Unique run ID: {timestamp}_{6-char hex}")
+    app_version: str = Field(..., description="Application version at run time")
+    task: str = Field(..., description="Pipeline task name")
+    model_key: str = Field(..., description="Model catalog key used for this run")
+    model_id: str = Field(..., description="Resolved model_id string from catalog")
+    dataset_path: str = Field(..., description="Path to the input documents file")
+    dataset_hash: str = Field(..., description="SHA-256 of the input documents file")
+    doc_ids: list[str] = Field(default_factory=list, description="Ordered list of processed doc_ids")
+    sample_size: int = Field(..., description="Number of documents processed")
+    sample_indices: list[int] = Field(default_factory=list, description="Zero-based indices of sampled docs")
+    ground_truth_path: str = Field(..., description="Path to the ground truth dataset file")
+    ground_truth_hash: str = Field(
+        ...,
+        description="SHA-256 of the ground truth texts for this run's doc_ids only",
+    )
+    config_hash: str = Field(
+        ...,
+        description="SHA-256 of task-relevant config block + model catalog entry",
+    )
+    config_snapshot: dict = Field(
+        default_factory=dict,
+        description="Pipeline + model config slice captured at run time",
+    )
+    results_path: str = Field(..., description="Path to the results JSON produced by this run")
+    created_at: str = Field(default_factory=utc_now_iso, description="ISO-8601 UTC timestamp")
+
+
 class EvaluationReport(AppModel):
     """Full evaluation report across all documents and metrics."""
 
@@ -94,6 +136,8 @@ class EvaluationReport(AppModel):
     run_timestamp: str = Field(default_factory=utc_now_iso)
     scores: list[EvaluationScore] = Field(default_factory=list)
     aggregate: dict = Field(default_factory=dict, description="Averaged scores per metric")
+    run_id: Optional[str] = Field(default=None, description="run_id from RunManifest if available")
+    manifest_path: Optional[str] = Field(default=None, description="Path to the RunManifest used")
 
 
 class ModelBenchmarkResult(AppModel):

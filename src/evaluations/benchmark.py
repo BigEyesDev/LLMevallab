@@ -209,7 +209,7 @@ class BenchmarkRunner:
                 pipeline_results=pipeline_results,
                 ground_truth_path=ground_truth_path,
                 task=task,
-                save_report=False,
+                persist_report=False,
             )
             model_results.append(
                 aggregate_pipeline_results(
