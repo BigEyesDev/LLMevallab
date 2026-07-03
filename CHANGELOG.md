@@ -7,6 +7,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-03
+
+### Added — Run manifest & provenance (Phase 2b Priority 1)
+
+- **`src/core/provenance.py`** — `file_hash`, `dataset_hash`, `ground_truth_hash`, `config_hash`, `config_snapshot` utilities. Ground truth hash is computed over only the exact `doc_ids` in the run, so swapping or modifying the reference file is detected.
+- **`RunManifest` Pydantic DTO** in `src/core/models.py` — full provenance record written alongside every results JSON: `run_id`, `app_version`, `task`, `model_key`, `model_id`, dataset/ground-truth/config hashes, `doc_ids`, `sample_indices`, `results_path`, `created_at`.
+- **`TASK_GROUND_TRUTH_KEY` dict** in `src/core/models.py` — shared mapping of task → ground truth metadata key (used by both orchestrator and evaluator without circular import).
+- **Orchestrator manifest writing** — every `PipelineOrchestrator` run now writes `{results_stem}.manifest.json` alongside the results JSON. `PipelineOrchestrator.__init__` accepts optional `model_key`, `dataset_path`, and `ground_truth_path` for full hash capture.
+- **`--dataset <catalog_key>`** CLI flag on orchestrator (mutually exclusive with `--input`). Enables full manifest hash tracking from a named dataset.
+- **`--evaluate`** CLI flag on orchestrator — chains evaluation immediately after inference using the manifest (no manual path bookkeeping).
+- **`Evaluator.run_on_manifest(manifest_path)`** — the recommended production evaluation path. Verifies ground truth hash, audits `doc_ids`, then runs scoring. Raises `RuntimeError` on hash mismatch and `FileNotFoundError` if the ground truth file is missing.
+- **`verify_manifest_ground_truth(manifest)`** and **`audit_doc_ids(results, manifest)`** — standalone helpers for hash verification and doc_id cross-checking.
+- **`EvaluationReport.run_id` and `EvaluationReport.manifest_path`** — optional fields linking every report back to the manifest it was produced from.
+- **`--run <manifest.json>`** CLI flag on evaluator (replaces implicit latest resolution). Requires `--results` or `--latest` to be explicit; `--latest` is now a named dev-only flag that prints a warning.
+- **`tests/test_provenance.py`** — 15 tests for hash stability, subset independence, order independence, known values.
+- **`tests/test_manifest.py`** — 13 tests for `RunManifest` round-trip, orchestrator manifest writing, hash verification (pass/fail/empty), doc_id audit, and end-to-end `run_on_manifest`.
+
+### Changed
+
+- `EvaluationReport` gains optional `run_id` and `manifest_path` fields (fully backward-compatible).
+- Evaluator CLI: `--results` and `--latest` are now explicit modes, not a silent default. `--latest` prints a dev warning. `--run` is the new production default.
+- Orchestrator `_save_results` returns only `Path` (unchanged); manifest writing is a side effect.
+
 ## [0.1.7] - 2026-07-03
 
 ### Fixed
