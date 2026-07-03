@@ -12,8 +12,8 @@ Every time a **feature branch merges into `dev`**, bump the **patch** version:
 0.1.2  →  feature/pricing-retry-models merged
 0.1.3  →  feature/providers merged
 0.1.4  →  feature/factory-cli merged
-0.1.5  →  feature/benchmark-runner merged   ← current on dev
-0.1.6  →  feature/integration merged         ← next
+0.1.5  →  feature/benchmark-runner merged
+0.1.6  →  feature/integration merged — Phase 2 complete on dev
 0.1.7+ →  Phase 3 feature branches (same rule)
 ```
 
@@ -40,7 +40,7 @@ uv run python -c "from src import __version__; print(__version__)"
 | `0.1.3` | `feature/providers` | yes |
 | `0.1.4` | `feature/factory-cli` | yes |
 | `0.1.5` | `feature/benchmark-runner` | yes |
-| `0.1.6` | `feature/integration` | pending |
+| `0.1.6` | `feature/integration` | yes — **Phase 2 complete** |
 
 When Phase 2 is complete and merged to **`main`**, you may optionally tag **`v0.1.6`** (or continue patch series into Phase 3).
 

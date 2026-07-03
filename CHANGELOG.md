@@ -7,9 +7,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-07-02
+
+`feature/integration` — Phase 2 complete.
+
 ### Added
 
-- (pending) Integration smoke and e2e tests (`feature/integration`)
+- Import smoke tests for pricing, retry, providers, and benchmark modules
+- End-to-end benchmark test with two mocked providers and JSON/CSV output
+- `anthropic` and `openai` in `requirements.txt`
 
 ## [0.1.5] - 2026-07-02
 
@@ -88,7 +94,8 @@ Phase 1 — single-model Gemini pipeline with evaluation metrics.
 - Pydantic DTOs for pipeline and evaluation results
 - Centralised prompts in `configs/prompts.yaml`
 
-[Unreleased]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.5...dev
+[Unreleased]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.6...dev
+[0.1.6]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/BigEyesDev/LLMevallab/compare/v0.1.2...v0.1.3
