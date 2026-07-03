@@ -6,7 +6,7 @@
 >
 > **Author:** [Akash Sachdeva (@BigEyesDev)](https://github.com/BigEyesDev) — Senior Engineer focused on ML, MLOps, and applied LLMs.
 
-**Version:** `0.1.7` — see [CHANGELOG.md](CHANGELOG.md) and [docs/VERSIONING.md](docs/VERSIONING.md).
+**Version:** `0.2.1` — see [CHANGELOG.md](CHANGELOG.md) and [docs/VERSIONING.md](docs/VERSIONING.md).
 
 ---
 

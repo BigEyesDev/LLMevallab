@@ -7,6 +7,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-03
+
+### Added — Task-specific truncation limits + CI + RUNBOOK (Phase 2b Priorities 3, 5, 6)
+
+- **`TruncationInfo` Pydantic DTO** in `src/core/models.py` — records `chars_original`, `chars_sent`, `was_truncated`, and `limit_applied` per document.
+- **`DEFAULT_TASK_TRUNCATION_LIMITS`** in `src/core/models.py` — hard-coded fallback limits per task (`translation: 2000`, `summarisation: 8000`, `full: 4000`).
+- **`max_document_length_per_task`** block in `configs/config.yaml` — per-task truncation limits that override the global `max_document_length` at inference time.
+- **`PipelineResult.truncation`** optional field — populated by the orchestrator on every run; original document text is always preserved in `PipelineResult.document.raw_text`.
+- **`PipelineOrchestrator._get_task_truncation_limit()`** — resolves the effective limit with the priority: per-task config → global config → hard-coded default.
+- **`PipelineOrchestrator._truncate_document()`** — produces a truncated document copy + `TruncationInfo`; does not mutate the original.
+- **Manifest `config_snapshot` enrichment** — `truncation_limit_applied` and `task` keys added to every manifest's `config_snapshot` so the exact limit is auditable after the fact.
+- **`tests/test_truncation.py`** — 18 tests covering `TruncationInfo`, limit resolution (per-task / global / default fallback), document truncation, `PipelineResult` population, and manifest snapshot.
+- **`.github/workflows/test.yml`** — GitHub Actions CI pipeline running `pytest` on every push and pull request to `main` and `dev`. Caches the `uv` environment; matrix-ready for future Python version pinning.
+- **`RUNBOOK.md`** — Manifest-first workflow guide: production run-and-evaluate, re-evaluate from an existing manifest, hash mismatch handling, and golden rebenchmark checklist.
+- **`docs/learning/ci_pipeline_tutorial.md`** — Hands-on CI pipeline tutorial explaining GitHub Actions structure, cache strategy, pytest integration, and lessons learned from this project.
+
+### Changed
+
+- `PipelineOrchestrator._process_single()` now applies per-task truncation before calling any processor method. The untruncated original is stored in `PipelineResult.document`.
+
 ## [0.2.0] - 2026-07-03
 
 ### Added — Run manifest & provenance (Phase 2b Priority 1)

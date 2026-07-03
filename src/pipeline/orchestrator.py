@@ -14,7 +14,14 @@ from tqdm import tqdm
 
 from src.core.base_processor import BaseDocumentProcessor
 from src.core.time import utc_timestamp, utc_now_iso
-from src.core.models import DocumentInput, PipelineResult, RunManifest, TASK_GROUND_TRUTH_KEY
+from src.core.models import (
+    DocumentInput,
+    PipelineResult,
+    RunManifest,
+    TruncationInfo,
+    TASK_GROUND_TRUTH_KEY,
+    DEFAULT_TASK_TRUNCATION_LIMITS,
+)
 from src.core.config import get_model_catalog, get_processed_path, load_config, validate_model_key
 from src.core.provenance import dataset_hash, ground_truth_hash, config_hash, config_snapshot
 from src.providers.gemini_processor import GeminiProcessor
@@ -182,6 +189,47 @@ class PipelineOrchestrator:
         logger.info(f"Pipeline complete. Results → {output_path}")
         return results
 
+    def _get_task_truncation_limit(self) -> int:
+        """Returns the per-task character truncation limit from config, with a fallback."""
+        per_task = (
+            self.config.get("pipeline", {})
+            .get("max_document_length_per_task", {})
+        )
+        task_val = self.task.value
+        if task_val in per_task:
+            return int(per_task[task_val])
+        # Fall back to global pipeline limit, then hard-coded defaults.
+        global_limit = self.config.get("pipeline", {}).get("max_document_length")
+        return int(global_limit) if global_limit else DEFAULT_TASK_TRUNCATION_LIMITS.get(task_val, 2000)
+
+    def _truncate_document(self, document: DocumentInput, limit: int) -> tuple[DocumentInput, TruncationInfo]:
+        """
+        Returns a (possibly truncated) document copy and the corresponding TruncationInfo.
+
+        When the document's raw_text is within the limit, the original document is returned
+        unchanged and ``was_truncated`` is False.
+        """
+        original_len = len(document.raw_text)
+        if original_len <= limit:
+            return document, TruncationInfo(
+                chars_original=original_len,
+                chars_sent=original_len,
+                was_truncated=False,
+                limit_applied=limit,
+            )
+
+        truncated_doc = document.model_copy(update={"raw_text": document.raw_text[:limit]})
+        logger.debug(
+            f"[{document.doc_id}] Truncated: {original_len} → {limit} chars "
+            f"(task={self.task.value})"
+        )
+        return truncated_doc, TruncationInfo(
+            chars_original=original_len,
+            chars_sent=limit,
+            was_truncated=True,
+            limit_applied=limit,
+        )
+
     def _process_single(self, document: DocumentInput, target_language: str) -> PipelineResult:
         """
         Runs the appropriate pipeline steps on one document based on self.task.
@@ -193,6 +241,10 @@ class PipelineOrchestrator:
 
         Each step is individually error-handled — a failure in one step
         does not abort the remaining steps for that document.
+
+        Truncation is applied before any LLM step using the per-task limit from config.
+        The original document (with full raw_text) is preserved in the result;
+        the truncated copy is only passed to the processor.
         """
         start = time.time()
 
@@ -200,9 +252,12 @@ class PipelineOrchestrator:
         translation = None
         summary = None
 
+        limit = self._get_task_truncation_limit()
+        truncated_doc, trunc_info = self._truncate_document(document, limit)
+
         # ── Step 1: Extract (runs for all tasks) ──────────────────────
         try:
-            extraction = self.processor.extract(document)
+            extraction = self.processor.extract(truncated_doc)
         except Exception as e:
             logger.error(f"[{document.doc_id}] Extraction failed: {e}")
 
@@ -210,7 +265,7 @@ class PipelineOrchestrator:
         if self.task in (PipelineTask.TRANSLATION, PipelineTask.FULL):
             try:
                 translation = self.processor.translate(
-                    document, target_language=target_language
+                    truncated_doc, target_language=target_language
                 )
             except Exception as e:
                 logger.error(f"[{document.doc_id}] Translation failed: {e}")
@@ -222,25 +277,26 @@ class PipelineOrchestrator:
                 # For SUMMARISATION task: document is already in target language
                 # (e.g. CNN/DailyMail is English) — summarise raw text directly
                 if self.task == PipelineTask.FULL and translation:
-                    summary_input = document.model_copy(
+                    summary_input = truncated_doc.model_copy(
                         update={
                             "raw_text": translation.translated_text,
                             "source_language": target_language,
                         }
                     )
                 else:
-                    summary_input = document
+                    summary_input = truncated_doc
 
                 summary = self.processor.summarise(summary_input)
             except Exception as e:
                 logger.error(f"[{document.doc_id}] Summarisation failed: {e}")
 
         return PipelineResult(
-            document=document,
+            document=document,      # always store the original, untruncated document
             extraction=extraction,
             translation=translation,
             summary=summary,
             total_processing_time_ms=(time.time() - start) * 1000,
+            truncation=trunc_info,
         )
 
     def _save_results(self, results: list[PipelineResult]) -> Path:
@@ -324,6 +380,9 @@ class PipelineOrchestrator:
             try:
                 c_hash = config_hash(self.config, self.model_key)
                 c_snapshot = config_snapshot(self.config, self.model_key)
+                # Annotate the snapshot with the effective truncation limit for this task
+                c_snapshot["truncation_limit_applied"] = self._get_task_truncation_limit()
+                c_snapshot["task"] = self.task.value
             except Exception as e:
                 logger.warning(f"config_hash failed: {e}")
 
