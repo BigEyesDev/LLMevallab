@@ -7,6 +7,7 @@ from pathlib import Path
 from datasets import load_dataset
 from tqdm import tqdm
 
+from src.core.config import cnn_dailymail_processed_path
 from src.core.models import DocumentInput
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,8 @@ class CNNDailyMailLoader:
             )
             documents.append(doc.model_dump())
 
-        output_path = self.processed_dir / f"cnn_dailymail_{self.sample_size}docs.json"
+        output_path = Path(cnn_dailymail_processed_path(self.sample_size))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(documents, f, ensure_ascii=False, indent=2)
 

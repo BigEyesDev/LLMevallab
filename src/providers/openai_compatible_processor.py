@@ -1,11 +1,11 @@
-# src/providers/gemini_processor.py
+# src/providers/openai_compatible_processor.py
 
 import json
 import logging
 import time
 from typing import Any
 
-import google.generativeai as genai
+from openai import OpenAI
 
 from src.core.base_processor import BaseDocumentProcessor
 from src.core.models import DocumentInput, ExtractionResult, TranslationResult, SummaryResult
@@ -15,35 +15,23 @@ from src.core.retry import retry_with_backoff
 logger = logging.getLogger(__name__)
 
 
-class GeminiProcessor(BaseDocumentProcessor):
-    """Gemini implementation of BaseDocumentProcessor."""
+class OpenAICompatibleProcessor(BaseDocumentProcessor):
+    """OpenAI-compatible chat completions adapter for OpenAI, OpenRouter, and similar hosts."""
 
     def __init__(self, api_key: str, config: dict, prompts: dict):
         super().__init__(model_name=config["model_id"], config=config)
-
-        genai.configure(api_key=api_key)
-
-        generation_config = genai.GenerationConfig(
-            temperature=config.get("temperature", 0.1),
-            max_output_tokens=config.get("max_output_tokens", 2048),
-        )
-
-        self._client = genai.GenerativeModel(
-            model_name=config["model_id"],
-            generation_config=generation_config,
-        )
+        base_url = config.get("base_url")
+        self._client = OpenAI(api_key=api_key, base_url=base_url)
         self._prompts = prompts
-        self._timeout = config.get("timeout_seconds", 30)
 
     def extract(self, document: DocumentInput) -> ExtractionResult:
         """Extract entities, dates, deadlines, topics, and key clauses."""
         start = time.time()
-
-        prompt = self._build_prompt(
+        system, user = self._build_prompt_parts(
             step="extraction",
             variables={"text": self._truncate(document.raw_text)},
         )
-        raw_output, token_usage = self._call_api(prompt)
+        raw_output, token_usage = self._call_api(system, user)
         parsed = self._parse_json(raw_output, step="extraction")
         cost_usd = self._cost_for_usage(token_usage)
 
@@ -76,14 +64,14 @@ class GeminiProcessor(BaseDocumentProcessor):
                 model_used=self.model_name,
             )
 
-        prompt = self._build_prompt(
+        system, user = self._build_prompt_parts(
             step="translation",
             variables={
                 "text": self._truncate(document.raw_text),
                 "source_language": document.source_language,
             },
         )
-        translated_text, token_usage = self._call_api(prompt)
+        translated_text, token_usage = self._call_api(system, user)
         cost_usd = self._cost_for_usage(token_usage)
 
         return TranslationResult(
@@ -101,12 +89,11 @@ class GeminiProcessor(BaseDocumentProcessor):
     def summarise(self, document: DocumentInput) -> SummaryResult:
         """Produce a structured English summary."""
         start = time.time()
-
-        prompt = self._build_prompt(
+        system, user = self._build_prompt_parts(
             step="summarisation",
             variables={"text": self._truncate(document.raw_text)},
         )
-        raw_output, token_usage = self._call_api(prompt)
+        raw_output, token_usage = self._call_api(system, user)
         parsed = self._parse_json(raw_output, step="summarisation")
         cost_usd = self._cost_for_usage(token_usage)
 
@@ -121,27 +108,34 @@ class GeminiProcessor(BaseDocumentProcessor):
             cost_usd=cost_usd,
         )
 
-    def _build_prompt(self, step: str, variables: dict[str, str]) -> str:
-        """Build a combined system + user prompt for Gemini."""
+    def _build_prompt_parts(self, step: str, variables: dict[str, str]) -> tuple[str, str]:
         step_prompts = self._prompts[step]
         system = step_prompts["system"]
         user = step_prompts["user"].format(**variables)
-        return f"{system}\n\n{user}"
+        return system, user
 
     @retry_with_backoff(max_retries=3, base_delay=0.01)
-    def _call_api(self, prompt: str) -> tuple[str, TokenUsage]:
-        """Call Gemini and return response text with token usage."""
+    def _call_api(self, system: str, user: str) -> tuple[str, TokenUsage]:
+        """Call chat completions and return text with token usage."""
         try:
-            response = self._client.generate_content(prompt)
-            metadata = getattr(response, "usage_metadata", None)
-            usage = TokenUsage(
-                input_tokens=getattr(metadata, "prompt_token_count", 0) or 0,
-                output_tokens=getattr(metadata, "candidates_token_count", 0) or 0,
+            response = self._client.chat.completions.create(
+                model=self.config["model_id"],
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=self.config.get("temperature", 0.1),
+                max_tokens=self.config.get("max_output_tokens", 2048),
             )
-            return response.text, usage
+            text = response.choices[0].message.content or ""
+            usage = TokenUsage(
+                input_tokens=response.usage.prompt_tokens,
+                output_tokens=response.usage.completion_tokens,
+            )
+            return text, usage
         except Exception as e:
-            logger.error(f"Gemini API call failed: {e}")
-            raise RuntimeError(f"Gemini API error: {e}") from e
+            logger.error(f"OpenAI-compatible API call failed: {e}")
+            raise RuntimeError(f"OpenAI-compatible API error: {e}") from e
 
     def _cost_for_usage(self, usage: TokenUsage) -> float:
         pricing = self.config.get("pricing")
@@ -150,7 +144,6 @@ class GeminiProcessor(BaseDocumentProcessor):
         return calculate_cost(usage, pricing)
 
     def _parse_json(self, raw: str, step: str) -> dict[str, Any]:
-        """Parse JSON from LLM output, stripping markdown fences when present."""
         cleaned = raw.strip()
         if cleaned.startswith("```"):
             cleaned = cleaned.split("```")[1]

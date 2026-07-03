@@ -3,13 +3,23 @@
 import json
 import logging
 import statistics
-from datetime import datetime
+import warnings
 from pathlib import Path
 
 import yaml
 
+from src.core.config import get_processed_path
+from src.core.time import utc_timestamp
+from src.core.models import (
+    EvaluationReport,
+    EvaluationScore,
+    PipelineResult,
+    RunManifest,
+    TASK_GROUND_TRUTH_KEY,
+)
+from src.core.provenance import ground_truth_hash as compute_ground_truth_hash
+from src.core.config import get_processed_path
 from src.evaluations.metrics import MetricInput, MetricsRunner
-from src.core.models import EvaluationReport, EvaluationScore
 from src.pipeline.orchestrator import PipelineTask
 
 logger = logging.getLogger(__name__)
@@ -35,10 +45,12 @@ TASK_HYPOTHESIS_FIELD: dict[PipelineTask, str] = {
     PipelineTask.FULL:          "translated_text",   # default — override as needed
 }
 
-# Which metadata key in DocumentInput holds the ground truth per task
-TASK_GROUND_TRUTH_KEY: dict[PipelineTask, str] = {
-    PipelineTask.TRANSLATION:   "reference_translation",  # EuroParl
-    PipelineTask.SUMMARISATION: "reference_summary",      # CNN/DailyMail
+# Which metadata key in DocumentInput holds the ground truth per task.
+# Kept for backward-compat with code that imports from evaluator.
+# Canonical definition is now in src.core.models.TASK_GROUND_TRUTH_KEY.
+TASK_GROUND_TRUTH_KEY_ENUM: dict[PipelineTask, str] = {
+    PipelineTask.TRANSLATION:   "reference_translation",
+    PipelineTask.SUMMARISATION: "reference_summary",
     PipelineTask.FULL:          "reference_translation",
 }
 
@@ -60,6 +72,13 @@ def load_pipeline_results(results_path: str) -> list[dict]:
     return results
 
 
+def load_manifest(manifest_path: str | Path) -> RunManifest:
+    """Load a RunManifest from its JSON file."""
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return RunManifest.model_validate(data)
+
+
 def load_ground_truth(ground_truth_path: str, task: PipelineTask) -> dict[str, str]:
     """
     Loads ground truth references from a processed dataset JSON.
@@ -75,7 +94,7 @@ def load_ground_truth(ground_truth_path: str, task: PipelineTask) -> dict[str, s
     Returns:
         Dict mapping doc_id → reference text
     """
-    gt_key = TASK_GROUND_TRUTH_KEY[task]
+    gt_key = TASK_GROUND_TRUTH_KEY_ENUM[task]
 
     with open(ground_truth_path, "r", encoding="utf-8") as f:
         documents = json.load(f)
@@ -97,6 +116,73 @@ def load_ground_truth(ground_truth_path: str, task: PipelineTask) -> dict[str, s
         f"(key='{gt_key}', missing={missing})"
     )
     return ground_truth
+
+
+# ─────────────────────────────────────────────────────
+# Manifest verification
+# ─────────────────────────────────────────────────────
+
+def verify_manifest_ground_truth(manifest: RunManifest) -> None:
+    """
+    Re-computes the ground truth hash for the manifest's doc_ids and compares it
+    to the stored ``ground_truth_hash``.
+
+    Raises:
+        RuntimeError: if the hash does not match, indicating the ground truth file
+                      has changed or is not the file used during inference.
+        ValueError:   if the manifest lacks enough data to verify (empty hashes).
+    """
+    if not manifest.ground_truth_hash:
+        raise ValueError(
+            f"RunManifest '{manifest.run_id}' has no ground_truth_hash recorded. "
+            "Re-run the pipeline with --dataset to enable hash verification."
+        )
+    if not manifest.ground_truth_path or not manifest.doc_ids:
+        raise ValueError(
+            f"RunManifest '{manifest.run_id}' is missing ground_truth_path or doc_ids."
+        )
+
+    gt_key = TASK_GROUND_TRUTH_KEY.get(manifest.task, "")
+    if not gt_key:
+        raise ValueError(f"Unknown task '{manifest.task}' — cannot determine ground truth key.")
+
+    if not Path(manifest.ground_truth_path).exists():
+        raise FileNotFoundError(
+            f"Ground truth file not found: '{manifest.ground_truth_path}'. "
+            "Evaluation cannot proceed without the original ground truth file."
+        )
+
+    actual_hash = compute_ground_truth_hash(
+        manifest.doc_ids, manifest.ground_truth_path, gt_key
+    )
+
+    if actual_hash != manifest.ground_truth_hash:
+        raise RuntimeError(
+            f"Ground truth hash MISMATCH for run '{manifest.run_id}'.\n"
+            f"  Manifest recorded: {manifest.ground_truth_hash}\n"
+            f"  Recomputed now:    {actual_hash}\n"
+            f"The ground truth file '{manifest.ground_truth_path}' has changed since "
+            "inference was run. Evaluation refused to prevent misleading scores."
+        )
+
+    logger.info(f"Ground truth hash verified OK for run '{manifest.run_id}'.")
+
+
+def audit_doc_ids(pipeline_results: list[dict], manifest: RunManifest) -> None:
+    """
+    Verifies that every doc_id in the pipeline results is in the manifest's doc_ids.
+
+    Logs a warning for any result doc_id not present in the manifest — this would
+    indicate the results file does not match the manifest.
+    """
+    manifest_ids = set(manifest.doc_ids)
+    for result in pipeline_results:
+        doc_id = result["document"]["doc_id"]
+        if doc_id not in manifest_ids:
+            logger.warning(
+                f"[{doc_id}] Result doc_id is NOT in manifest.doc_ids — "
+                "results file may not match this manifest."
+            )
 
 
 # ─────────────────────────────────────────────────────
@@ -239,7 +325,7 @@ def save_report(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = utc_timestamp()
     model_slug = report.model_used.replace("/", "_").replace("-", "_")
     filename = f"report_{task.value}_{model_slug}_{timestamp}.json"
     full_path = output_path / filename
@@ -267,7 +353,13 @@ class Evaluator:
         5. Aggregate scores (mean, min, max, std)
         6. Save EvaluationReport to outputs/reports/
 
-    Usage:
+    Usage (manifest-first, recommended):
+        evaluator = Evaluator(config)
+        report = evaluator.run_on_manifest(
+            "outputs/results/results_summarisation_...manifest.json"
+        )
+
+    Usage (explicit paths):
         evaluator = Evaluator(config)
         report = evaluator.run(
             results_path="outputs/results/results_translation_gemini_...json",
@@ -282,6 +374,65 @@ class Evaluator:
         self.bertscore_model = (
             config.get("evaluation", {}).get("bertscore_model", "microsoft/deberta-xlarge-mnli")
         )
+
+    def run_on_manifest(
+        self,
+        manifest_path: str | Path,
+        *,
+        skip_hash_verification: bool = False,
+    ) -> EvaluationReport:
+        """
+        Evaluate using a RunManifest — the recommended production path.
+
+        Loads the manifest, verifies ground truth hash, audits doc_ids,
+        then runs evaluation.  Saves and prints the report.
+
+        Args:
+            manifest_path:          Path to a ``*.manifest.json`` file.
+            skip_hash_verification: If True, bypasses hash check (dev/debug only).
+                                    Logs a warning when used.
+
+        Returns:
+            EvaluationReport linked to the manifest's run_id.
+
+        Raises:
+            RuntimeError: if ground truth hash does not match the manifest.
+            FileNotFoundError: if the results or ground truth files are missing.
+        """
+        manifest = load_manifest(manifest_path)
+        logger.info(
+            f"run_on_manifest | run_id={manifest.run_id} | task={manifest.task} | "
+            f"model_key={manifest.model_key}"
+        )
+
+        if skip_hash_verification:
+            warnings.warn(
+                "skip_hash_verification=True — ground truth hash NOT checked. "
+                "Scores may not be reproducible.",
+                stacklevel=2,
+            )
+        else:
+            verify_manifest_ground_truth(manifest)
+
+        if not Path(manifest.results_path).exists():
+            raise FileNotFoundError(
+                f"Results file not found: '{manifest.results_path}'. "
+                "The manifest points to a results file that no longer exists."
+            )
+
+        pipeline_results = load_pipeline_results(manifest.results_path)
+        audit_doc_ids(pipeline_results, manifest)
+
+        task = PipelineTask(manifest.task)
+        report = self._evaluate_raw_results(
+            pipeline_results,
+            ground_truth_path=manifest.ground_truth_path,
+            task=task,
+            persist_report=True,
+            run_id=manifest.run_id,
+            manifest_path=str(manifest_path),
+        )
+        return report
 
     def run(
         self,
@@ -303,11 +454,44 @@ class Evaluator:
         """
         logger.info(f"Starting evaluation | task={task.value}")
 
-        # ── 1. Load data ───────────────────────────────────────────────
         pipeline_results = load_pipeline_results(results_path)
-        ground_truth = load_ground_truth(ground_truth_path, task)
+        return self.run_on_results(
+            pipeline_results=[PipelineResult.model_validate(r) for r in pipeline_results],
+            ground_truth_path=ground_truth_path,
+            task=task,
+            persist_report=True,
+        )
 
-        # ── 2. Pair hypothesis ↔ reference by doc_id ───────────────────
+    def run_on_results(
+        self,
+        pipeline_results: list[PipelineResult],
+        ground_truth_path: str,
+        task: PipelineTask,
+        *,
+        persist_report: bool = False,
+    ) -> EvaluationReport:
+        """Evaluate in-memory pipeline results against ground truth references."""
+        raw_results = [
+            r.model_dump() if isinstance(r, PipelineResult) else r for r in pipeline_results
+        ]
+        return self._evaluate_raw_results(
+            raw_results,
+            ground_truth_path=ground_truth_path,
+            task=task,
+            persist_report=persist_report,
+        )
+
+    def _evaluate_raw_results(
+        self,
+        pipeline_results: list[dict],
+        ground_truth_path: str,
+        task: PipelineTask,
+        *,
+        persist_report: bool,
+        run_id: str | None = None,
+        manifest_path: str | None = None,
+    ) -> EvaluationReport:
+        ground_truth = load_ground_truth(ground_truth_path, task)
         metric_inputs = build_metric_inputs(pipeline_results, ground_truth, task)
 
         if not metric_inputs:
@@ -316,7 +500,6 @@ class Evaluator:
                 "results and ground truth, and that the correct task is set."
             )
 
-        # ── 3. Select and run metrics for this task ────────────────────
         metrics_to_run = TASK_METRICS[task]
         logger.info(f"Running metrics: {metrics_to_run}")
 
@@ -325,27 +508,20 @@ class Evaluator:
             bertscore_model=self.bertscore_model,
         )
         all_scores = runner.run_all(metric_inputs)
-
-        # ── 4. Aggregate ───────────────────────────────────────────────
         aggregate = aggregate_scores(all_scores)
-
-        # ── 5. Flatten scores list for the report ─────────────────────
         flat_scores = [score for scores in all_scores.values() for score in scores]
-
-        # ── 6. Detect model name from results ─────────────────────────
         model_used = _detect_model(pipeline_results, task)
 
-        # ── 7. Build and save report ───────────────────────────────────
         report = EvaluationReport(
             model_used=model_used,
             scores=flat_scores,
             aggregate=aggregate,
+            run_id=run_id,
+            manifest_path=manifest_path,
         )
-        save_report(report, self.report_dir, task)
-
-        # ── 8. Print summary to console ───────────────────────────────
-        self._print_summary(report, task)
-
+        if persist_report:
+            save_report(report, self.report_dir, task)
+            self._print_summary(report, task)
         return report
 
     def _print_summary(self, report: EvaluationReport, task: PipelineTask) -> None:
@@ -354,6 +530,8 @@ class Evaluator:
         print(f"  Evaluation Summary")
         print(f"  Task:  {task.value.upper()}")
         print(f"  Model: {report.model_used}")
+        if report.run_id:
+            print(f"  Run:   {report.run_id}")
         print(f"{'─' * 55}")
         print(f"  {'Metric':<15} {'Mean':>8} {'Min':>8} {'Max':>8} {'Std':>8}")
         print(f"  {'─' * 49}")
@@ -399,9 +577,12 @@ def resolve_results_path(task: PipelineTask, outputs_dir: str) -> Path:
     """
     Returns the path stored in the latest pointer file for the given task.
 
+    .. deprecated::
+        This function supports the legacy ``--latest`` dev flow.
+        Prefer ``--run <manifest_path>`` for production evaluation.
+
     The orchestrator writes outputs/results/latest_{task}.txt after every run,
-    containing the absolute path of the most recent results JSON.  This lets
-    downstream tools pick up the newest output without an explicit path.
+    containing the absolute path of the most recent results JSON.
 
     Raises:
         FileNotFoundError: if the pointer file does not exist (no run yet).
@@ -410,28 +591,15 @@ def resolve_results_path(task: PipelineTask, outputs_dir: str) -> Path:
     if not pointer.exists():
         raise FileNotFoundError(
             f"No latest-results pointer found at '{pointer}'. "
-            f"Run the orchestrator first, or pass --results explicitly."
+            f"Run the orchestrator first, or pass --run <manifest.json> explicitly."
         )
     return Path(pointer.read_text(encoding="utf-8").strip())
 
 
 def resolve_ground_truth_path(task: PipelineTask, config: dict) -> str:
-    """
-    Returns the ground truth path from config for the given task.
-
-    Reads config["datasets"][dataset_key]["processed_path"].
-
-    Raises:
-        KeyError: if the config section is missing.
-    """
+    """Returns the processed dataset path derived from sample_size in config."""
     dataset_key = _TASK_DATASET_KEY[task]
-    try:
-        return config["datasets"][dataset_key]["processed_path"]
-    except KeyError as exc:
-        raise KeyError(
-            f"config.yaml is missing datasets.{dataset_key}.processed_path "
-            f"(needed for task '{task.value}'). Pass --ground-truth explicitly."
-        ) from exc
+    return get_processed_path(config, dataset_key)
 
 
 # ─────────────────────────────────────────────────────
@@ -446,30 +614,42 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Run LLMEvalForge evaluation on pipeline outputs."
     )
-    parser.add_argument(
-        "--results",
-        default=None,
+
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument(
+        "--run",
+        dest="manifest_path",
+        metavar="MANIFEST",
         help=(
-            "Path to pipeline results JSON (from orchestrator). "
-            "If omitted, the latest run is discovered automatically via "
-            "outputs/results/latest_{task}.txt."
+            "Path to a *.manifest.json file produced by the orchestrator. "
+            "Verifies ground truth hash before scoring — recommended for all evaluations."
         ),
     )
+    mode_group.add_argument(
+        "--results",
+        default=None,
+        help="Path to pipeline results JSON (requires --ground-truth and --task).",
+    )
+    mode_group.add_argument(
+        "--latest",
+        action="store_true",
+        help=(
+            "[DEV ONLY] Auto-discover the latest results via the pointer file. "
+            "Prints a warning. Requires --task."
+        ),
+    )
+
     parser.add_argument(
         "--ground-truth",
         default=None,
         dest="ground_truth",
-        help=(
-            "Path to processed dataset JSON with reference texts. "
-            "If omitted, the path is read from config.yaml "
-            "(datasets.europarl.processed_path or datasets.cnn_dailymail.processed_path)."
-        ),
+        help="Path to processed dataset JSON with reference texts (required with --results).",
     )
     parser.add_argument(
         "--task",
-        required=True,
+        default=None,
         choices=[t.value for t in PipelineTask],
-        help="Task type — must match what the pipeline was run with",
+        help="Task type — required with --results and --latest.",
     )
     parser.add_argument(
         "--config",
@@ -481,21 +661,49 @@ if __name__ == "__main__":
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
 
-    task = PipelineTask(args.task)
-
-    results_path = args.results or str(
-        resolve_results_path(task, config.get("paths", {}).get("outputs", "outputs/results/"))
-    )
-    ground_truth_path = args.ground_truth or resolve_ground_truth_path(task, config)
-
-    logger.info(f"Results:      {results_path}")
-    logger.info(f"Ground truth: {ground_truth_path}")
-
     evaluator = Evaluator(config=config)
-    report = evaluator.run(
-        results_path=results_path,
-        ground_truth_path=ground_truth_path,
-        task=task,
-    )
 
-    print(f"Report saved to: {config.get('paths', {}).get('reports', 'outputs/reports/')}")
+    if args.manifest_path:
+        # ── Production path: manifest-first ───────────────────────────
+        report = evaluator.run_on_manifest(args.manifest_path)
+        print(f"Report saved to: {config.get('paths', {}).get('reports', 'outputs/reports/')}")
+
+    elif args.results:
+        # ── Explicit paths ─────────────────────────────────────────────
+        if not args.task:
+            parser.error("--task is required when using --results")
+        if not args.ground_truth:
+            parser.error("--ground-truth is required when using --results")
+
+        task = PipelineTask(args.task)
+        report = evaluator.run(
+            results_path=args.results,
+            ground_truth_path=args.ground_truth,
+            task=task,
+        )
+        print(f"Report saved to: {config.get('paths', {}).get('reports', 'outputs/reports/')}")
+
+    else:
+        # ── Dev-only: latest pointer ───────────────────────────────────
+        if not args.task:
+            parser.error("--task is required when using --latest")
+
+        print(
+            "\n[WARNING] --latest resolves to the most recent run via pointer file.\n"
+            "          This is a DEV convenience — use --run <manifest.json> for\n"
+            "          reproducible, hash-verified evaluation.\n"
+        )
+        task = PipelineTask(args.task)
+        outputs_dir = config.get("paths", {}).get("outputs", "outputs/results/")
+        results_path = str(resolve_results_path(task, outputs_dir))
+        ground_truth_path = args.ground_truth or resolve_ground_truth_path(task, config)
+
+        logger.info(f"Results (latest):  {results_path}")
+        logger.info(f"Ground truth:      {ground_truth_path}")
+
+        report = evaluator.run(
+            results_path=results_path,
+            ground_truth_path=ground_truth_path,
+            task=task,
+        )
+        print(f"Report saved to: {config.get('paths', {}).get('reports', 'outputs/reports/')}")

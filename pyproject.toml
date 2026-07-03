@@ -7,8 +7,8 @@ packages = ["src"]
 
 [project]
 name = "llmevallab"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.1"
+description = "Model-agnostic LLM document evaluation and benchmarking"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -19,6 +19,8 @@ dependencies = [
     "requests==2.32.3",
     # LLM Providers
     "google-generativeai==0.7.2",
+    "anthropic>=0.39.0",
+    "openai>=1.55.0",
     # Evaluation Metrics
     "nltk>=3.8.2",
     "rouge-score==0.1.2",
@@ -35,4 +37,5 @@ dependencies = [
     "ipykernel==6.29.4",
     # Testing
     "pytest==8.2.0",
+    "tenacity>=8.2.0",
 ]

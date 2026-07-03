@@ -1,0 +1,87 @@
+# CI — run pytest on every push and PR to main and dev.
+#
+# Design decisions:
+#   - uv is used for dependency management (matches local dev workflow exactly).
+#   - The uv cache is keyed on the lockfile so a clean install only runs when
+#     uv.lock actually changes.
+#   - API-dependent tests (gemini, claude, openai) are excluded from CI because
+#     they require secrets and network calls.  Unit and integration tests that
+#     mock all I/O run instead.
+#   - GEMINI_API_KEY etc. are set to dummy values so that import-time env-var
+#     checks (if any) don't abort before the test suite even starts.
+
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+  pull_request:
+    branches:
+      - main
+      - dev
+
+jobs:
+  test:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+      # ── 1. Checkout ───────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Install uv ────────────────────────────────────────────────
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      # ── 3. Set up Python ─────────────────────────────────────────────
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # ── 4. Cache the uv virtual environment ──────────────────────────
+      # Key includes OS, Python version, and the lockfile hash so the cache
+      # is invalidated when any dependency changes.
+      - name: Cache uv environment
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            venv-${{ runner.os }}-py${{ matrix.python-version }}-
+
+      # ── 5. Install dependencies ───────────────────────────────────────
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # ── 6. Set dummy API keys ─────────────────────────────────────────
+      # Provider processors read these at import time in some paths.
+      # Dummy values prevent EnvironmentError before tests even run.
+      - name: Set dummy API keys
+        run: |
+          echo "GEMINI_API_KEY=ci-dummy" >> $GITHUB_ENV
+          echo "ANTHROPIC_API_KEY=ci-dummy" >> $GITHUB_ENV
+          echo "OPENAI_API_KEY=ci-dummy" >> $GITHUB_ENV
+          echo "OPENROUTER_API_KEY=ci-dummy" >> $GITHUB_ENV
+
+      # ── 7. Run pytest ─────────────────────────────────────────────────
+      # Exclude tests that make real API calls (they need provider secrets).
+      # All other tests use mocks and run fully offline.
+      - name: Run tests
+        run: |
+          uv run pytest tests/ \
+            --ignore=tests/test_gemini_processor.py \
+            --ignore=tests/test_claude_processor.py \
+            --ignore=tests/test_openai_compatible_processor.py \
+            -v \
+            --tb=short
