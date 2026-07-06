@@ -7,6 +7,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-06
+
+### Added — Local Streamlit dashboard + offline benchmark samples (Phase 3a/3b)
+
+- **`app/dashboard.py`** — Streamlit model comparison dashboard: task/model selection, doc grid, per-model progress, quality bar charts, cost vs. quality scatter, JSON/CSV export, session run cache, data-source toggle (benchmark samples vs. full HF dataset), per-doc token/cost estimates, and pricing disclaimer.
+- **`BenchmarkRunner.run(documents=...)`** — optional document injection so the dashboard benchmarks an exact selection.
+- **`scripts/export_benchmark_samples.py`** — one-time export of curated 30-doc slices from processed JSON to `data/benchmark_samples/`.
+- **`src/pipeline/benchmark_sample_loader.py`** — offline loader for committed benchmark samples (no network required).
+- **`data/benchmark_samples/`** — committed translation and summarisation sample JSON plus provenance README.
+- **Six new OpenRouter models** in `configs/config.yaml`: `qwen3-30b`, `qwen2.5-72b`, `glm-4-7`, `mistral-small-3.2`, `phi-4`, `gemma-3-27b` with live pricing.
+- **`tests/test_dashboard.py`**, **`tests/test_benchmark_sample_loader.py`**, and expanded **`tests/test_config.py`**.
+
+### Changed
+
+- Per-task truncation limits raised (`translation: 15000`, `summarisation: 30000`) so benchmark docs are not cut in normal use.
+- Processors no longer apply a redundant second-pass 2k-char truncation; orchestrator limits are the single source of truth.
+- Dashboard config reload keyed on file mtimes so catalog edits appear without a server restart.
+- ROUGE-L metric display fixed in Key Takeaways (`rouge_l` → `ROUGE-L` mapping).
+
 ## [0.2.1] - 2026-07-03
 
 ### Added — Task-specific truncation limits + CI + RUNBOOK (Phase 2b Priorities 3, 5, 6)
