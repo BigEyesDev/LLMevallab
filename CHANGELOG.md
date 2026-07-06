@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — COMET translation metric
+
+- **`COMETMetric`** in `src/evaluations/metrics.py` — reference-based neural MT evaluation via `unbabel-comet` (lazy import; default model `Unbabel/wmt22-comet-da`).
+- **`comet`** wired into `MetricsRunner`, translation metrics in `configs/config.yaml`, and evaluator config resolution via `get_task_metrics()`.
+- **`MetricInput.source`** — source document text passed to COMET for hypothesis/reference pairing.
+- **`tests/test_metrics.py`** — unit tests with mocked COMET model (no HF download in CI).
+
 ### Added — Prompt editor, run history, polish (Phase 3c)
 
 - **`src/pipeline/prompt_manager.py`** — load, version, and snapshot prompt templates; snapshots written to `configs/prompt_history/` on save.

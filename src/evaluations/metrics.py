@@ -23,6 +23,7 @@ class MetricInput:
     doc_id: str
     hypothesis: str    # LLM output (what we're evaluating)
     reference: str     # Ground truth (what it should be)
+    source: str = ""   # Original document text (required for COMET translation scoring)
 
 
 class BLEUMetric:
@@ -185,6 +186,76 @@ class BERTScoreMetric:
         return scores
 
 
+class COMETMetric:
+    """
+    COMET — Crosslingual Optimized Metric for Evaluation of Translation.
+
+    Neural metric trained on human quality judgments. Requires source text,
+    machine translation (hypothesis), and reference translation.
+
+    Score range: typically 0.0–1.0 (higher is better)
+    Typical use: translation quality (reference-based)
+
+    Paper: https://arxiv.org/abs/2009.09036
+    """
+
+    name = "comet"
+
+    def __init__(
+        self,
+        model_name: str = "Unbabel/wmt22-comet-da",
+        model: object | None = None,
+    ):
+        self.model_name = model_name
+        self._model = model
+
+    def _load_model(self):
+        if self._model is not None:
+            return self._model
+        try:
+            from comet import download_model, load_from_checkpoint
+        except ImportError as exc:
+            raise ImportError(
+                "COMET requires 'unbabel-comet'. Install with: uv add unbabel-comet"
+            ) from exc
+        model_path = download_model(self.model_name)
+        self._model = load_from_checkpoint(model_path)
+        return self._model
+
+    def score(self, inputs: list[MetricInput]) -> list[EvaluationScore]:
+        data = []
+        for item in inputs:
+            if not item.source:
+                logger.warning(f"[{item.doc_id}] No source text for COMET — using empty string.")
+            data.append({
+                "src": item.source,
+                "mt": item.hypothesis,
+                "ref": item.reference,
+            })
+
+        logger.info(f"Computing COMET ({self.model_name}) on {len(inputs)} docs...")
+        model = self._load_model()
+        output = model.predict(data, batch_size=8, gpus=0)
+
+        scores: list[EvaluationScore] = []
+        for i, item in enumerate(inputs):
+            scores.append(EvaluationScore(
+                doc_id=item.doc_id,
+                metric_name=self.name,
+                score=round(float(output.scores[i]), 4),
+            ))
+
+        scores.append(EvaluationScore(
+            doc_id="__corpus__",
+            metric_name=f"{self.name}_corpus",
+            score=round(float(output.system_score), 4),
+        ))
+
+        avg = sum(s.score for s in scores if s.doc_id != "__corpus__") / len(inputs) if inputs else 0
+        logger.info(f"COMET average score: {avg:.4f} (system={output.system_score:.4f})")
+        return scores
+
+
 class MetricsRunner:
     """
     Convenience class that runs all configured metrics in one call.
@@ -198,15 +269,23 @@ class MetricsRunner:
         "bleu": BLEUMetric,
         "rouge": ROUGEMetric,
         "bertscore": BERTScoreMetric,
+        "comet": COMETMetric,
     }
 
-    def __init__(self, metrics: list[str], bertscore_model: str = "microsoft/deberta-xlarge-mnli"):
+    def __init__(
+        self,
+        metrics: list[str],
+        bertscore_model: str = "microsoft/deberta-xlarge-mnli",
+        comet_model: str = "Unbabel/wmt22-comet-da",
+    ):
         self._metrics = []
         for name in metrics:
             if name not in self.AVAILABLE_METRICS:
                 raise ValueError(f"Unknown metric: '{name}'. Available: {list(self.AVAILABLE_METRICS)}")
             if name == "bertscore":
                 self._metrics.append(BERTScoreMetric(model_type=bertscore_model))
+            elif name == "comet":
+                self._metrics.append(COMETMetric(model_name=comet_model))
             else:
                 self._metrics.append(self.AVAILABLE_METRICS[name]())
 

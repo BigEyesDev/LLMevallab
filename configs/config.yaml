@@ -167,10 +167,12 @@ evaluation:
     translation:
       - bleu
       - bertscore
+      - comet
     summarisation:
       - rouge
       - bertscore
   bertscore_model: "microsoft/deberta-base"
+  comet_model: "Unbabel/wmt22-comet-da"
   output_path: "outputs/results/"
 
 paths:

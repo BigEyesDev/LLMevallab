@@ -150,6 +150,7 @@ See [RUNBOOK.md](RUNBOOK.md) for operational details.
 | Metric | Use case | Good score (rule of thumb) |
 |---|---|---|
 | **BLEU** | Translation | > 0.30 |
+| **COMET** | Translation | > 0.80 |
 | **ROUGE-L** | Summarisation | > 0.25 |
 | **BERTScore** | Both | > 0.70 (F1) |
 
