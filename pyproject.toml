@@ -7,7 +7,7 @@ packages = ["src"]
 
 [project]
 name = "llmevallab"
-version = "0.2.1"
+version = "0.3.0"
 description = "Model-agnostic LLM document evaluation and benchmarking"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -35,6 +35,8 @@ dependencies = [
     # Notebook
     "jupyter==1.0.0",
     "ipykernel==6.29.4",
+    # Dashboard
+    "streamlit>=1.35.0",
     # Testing
     "pytest==8.2.0",
     "tenacity>=8.2.0",

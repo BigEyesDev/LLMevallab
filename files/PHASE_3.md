@@ -3,7 +3,6 @@
 > **Prerequisite:** Phase 2b complete on `main` (v0.2.1 — manifest provenance, CI, RUNBOOK) ✅
 > **Primary deliverable:** A Streamlit dashboard that runs locally, lets you pick models and tasks, runs the benchmark, and shows a side-by-side comparison with charts and export.
 > **Stack:** Streamlit + existing Python benchmark engine. No deployment, no BYOK, no security plumbing.
-> **Time estimate:** ~1 week part-time.
 
 ---
 
@@ -13,156 +12,254 @@ The original plan was a public BYOK web app. That optimises for *strangers visit
 
 Simpler is better here. A Streamlit dashboard launched with one command is faster to build, more useful day-to-day, and a better README story.
 
-If a public URL becomes desirable after Phase 3 ships — once there's evidence anyone wants it — Streamlit → Gradio is straightforward and becomes Phase 4.
+Public deployment (Docker, HF Spaces) is deferred to Phase 4 — only if there is evidence of real demand.
 
 ---
 
-## What it delivers
+## HuggingFace — two separate roles
+
+| Role | What | Status |
+|---|---|---|
+| **HF Datasets (data source)** | Python library to download EuroParl + CNN/DailyMail benchmark data | Used in `python main.py`. One-time download, cached locally by `datasets` lib. Replaced by static samples for offline use. |
+| **HF Spaces (deployment platform)** | Host dashboard as a public web app | **Removed from Phase 3.** Deferred to Phase 4. |
+
+---
+
+## Data layer architecture
+
+Two tiers — the dashboard exposes both via a sidebar radio:
 
 ```
-clone repo → add API keys to .env → uv run streamlit run app/dashboard.py → open browser
+Tier 1 — Benchmark samples (built-in, always available, no setup required)
+  data/benchmark_samples/
+  ├── translation_de_en.json     30 docs committed to git
+  ├── summarisation_en.json      30 docs committed to git
+  └── README.md                  provenance: source, HF version, export date
+
+Tier 2 — Full HF dataset (one-time download, up to 100+ docs)
+  data/processed/
+  ├── europarl/europarl_de-en_Ndocs.json     after: python main.py
+  └── cnn_dailymail/cnn_dailymail_Ndocs.json after: python main.py
 ```
 
-The dashboard:
-
-1. **Task picker** — Translation or Summarisation
-2. **Model selector** — multi-select from the config catalog
-3. **Sample size slider** — 1–30 docs
-4. **Run button** — runs the benchmark, shows a per-model progress indicator
-5. **Results table** — Model | ROUGE/BLEU | BERTScore | Avg tokens | Total cost | Avg latency
-6. **Charts** — bar chart per metric, cost vs. quality scatter
-7. **Export** — download JSON or CSV
-
-No API key UI — keys are read from `.env` as they always have been.
+HF `datasets` library caches to `~/.cache/huggingface/` — subsequent runs are instant. A user who wants more than 30 docs runs `python main.py` once and never again.
 
 ---
 
 ## Architecture
 
-Minimal. The dashboard is a thin display layer on top of what already exists:
-
 ```
 app/dashboard.py  (Streamlit)
        │
+       ├── BenchmarkSampleLoader   ← Tier 1: reads static JSON (offline)
+       └── EuroParlLoader /        ← Tier 2: reads HF-downloaded processed JSON
+           CNNDailyMailLoader
+       │
        ▼
-BenchmarkRunner.run(docs, models, task)   ← already built in Phase 2
+BenchmarkRunner.run(docs, models, task, documents=...)
        │
        ├── PipelineOrchestrator (per model)
        └── Evaluator → EvaluationReport
 ```
 
-No new abstractions. No new config. The dashboard calls `BenchmarkRunner` exactly the same way the CLI does.
-
 ---
 
 ## Sub-phases
 
-### Phase 3a — Streamlit MVP
+### Phase 3a — Streamlit MVP ✅ COMPLETE (v0.2.2)
 
-**Goal:** Working dashboard, end-to-end, one command to launch.
+**Delivered:**
 
-| Task | Implementation | Test |
+| Feature | File | Notes |
 |---|---|---|
-| `dashboard-shell` | `app/dashboard.py` with sidebar (task, models, sample size) | Smoke: `import dashboard` |
-| `benchmark-runner-call` | Wire sidebar inputs → `BenchmarkRunner.run()` | Mock test: runner called with correct args |
-| `results-table` | `st.dataframe` of `BenchmarkReport` | Smoke: table shows model names |
-| `metric-bar-chart` | `st.bar_chart` per metric (ROUGE, BLEU, BERTScore) | Visual: chart renders without error |
-| `cost-latency-scatter` | `st.scatter_chart` — x: cost per doc, y: BERTScore | Visual smoke |
-| `export-buttons` | `st.download_button` for JSON and CSV | Round-trip: downloaded JSON parses back |
-
-**New file:**
-
-```
-app/
-├── __init__.py
-└── dashboard.py
-```
-
-**Run command (added to README):**
-
-```bash
-uv run streamlit run app/dashboard.py
-```
+| Dashboard shell | `app/dashboard.py` | Task picker, model multi-select, doc selector grid |
+| BenchmarkRunner wiring | `app/dashboard.py` | Per-model progress bar + step log |
+| Results table | `app/dashboard.py` | `st.dataframe`, all metrics + cost + latency |
+| Quality metric bar charts | `app/dashboard.py` | Altair, per-model colours, score labels |
+| Cost vs. quality scatter | `app/dashboard.py` | Altair, labelled points, size = latency |
+| Export buttons | `app/dashboard.py` | JSON + CSV download |
+| Run cache | `app/dashboard.py` | Session-state cache keyed on (task, models, doc IDs) |
+| Doc card grid | `app/dashboard.py` | 3-column cards, checkboxes, All/None/Random N |
+| Pre-run context | `app/dashboard.py` | Task info, metric explainers, model pricing table, dataset preview |
+| Key takeaways | `app/dashboard.py` | Auto-generated plain-English interpretation of results |
+| `documents` param | `src/evaluations/benchmark.py` | Optional — lets dashboard inject specific doc list |
 
 ---
 
-### Phase 3b — Static benchmark samples + model catalog
+### Phase 3b — Static benchmark samples + model catalog ✅ COMPLETE (v0.3.0)
 
-**Goal:** No runtime HuggingFace downloads. Curated dataset committed to repo. More models in catalog.
+**Goal:** Zero-setup offline benchmark data. More models. Dashboard data source toggle.
 
-**Dataset problem today:** EuroParl and CNN/DailyMail loaders download from HF at runtime — slow, flaky, not suitable as a baseline for reproducible comparisons.
+#### `export-benchmark-samples`
 
-**Fix:** Export 30-doc slices once from existing loaders, spot-check them, commit to repo.
+One-time export script (`scripts/export_benchmark_samples.py`) reads the existing processed
+JSON files and writes curated 30-doc slices to `data/benchmark_samples/`.
 
 ```
 data/benchmark_samples/
-├── translation_de_en.json      # 30 docs: {doc_id, source_language, raw_text, reference}
-├── summarisation_en.json       # 30 docs: {doc_id, raw_text, reference_summary}
-└── README.md                   # provenance: source, date exported, HF version
+├── translation_de_en.json      # 30 docs: {doc_id, source_language, raw_text, metadata.reference_translation}
+├── summarisation_en.json       # 30 docs: {doc_id, raw_text, metadata.reference_summary}
+└── README.md                   # provenance: source dataset, HF version, export date, doc_ids
 ```
 
-New loader `src/pipeline/benchmark_sample_loader.py` — reads static JSON, returns `list[DocumentInput]` + ground truths.
+#### `benchmark-sample-loader`
 
-**Model catalog expansion (YAML only — no new code):**
+New file: `src/pipeline/benchmark_sample_loader.py`
 
-```yaml
-nemotron-nano:
-  provider_type: openai_compatible
-  model_id: nvidia/nemotron-nano-9b-v2
-  base_url: https://openrouter.ai/api/v1
-  api_key_env: OPENROUTER_API_KEY
-  pricing: {input_per_1m: 0.04, output_per_1m: 0.04}
+```python
+class BenchmarkSampleLoader:
+    """Reads committed static JSON benchmark samples. No network required."""
+    def load(self, task: str) -> list[DocumentInput]: ...
+    def ground_truth(self, task: str) -> dict[str, str]: ...
 ```
 
-Target: add 5–10 models via OpenRouter. No new provider code — `OpenAICompatibleProcessor` already handles them.
+Follows the same interface as `EuroParlDataLoader` and `CNNDailyMailLoader`.
+Returns `list[DocumentInput]` + a ground-truth dict — the evaluator receives both unchanged.
+
+#### `catalog-expansion`
+
+Pure YAML — no new code. Add to `configs/config.yaml`:
+
+| Key | Model ID | Provider | Notes |
+|---|---|---|---|
+| `qwen3-30b` | `qwen/qwen3-30b-a3b` | OpenRouter | Strong multilingual, cheap |
+| `qwen2.5-72b` | `qwen/qwen-2.5-72b-instruct` | OpenRouter | Established multilingual baseline |
+| `glm-4-7` | `z-ai/glm-4.7` | OpenRouter | Zhipu GLM-4 flagship (replaces deprecated glm-z1-32b) |
+| `mistral-small-3.2` | `mistralai/mistral-small-3.2-24b-instruct` | OpenRouter | European model, strong multilingual |
+| `phi-4` | `microsoft/phi-4` | OpenRouter | Small but punches above its weight |
+| `gemma-3-27b` | `google/gemma-3-27b-it` | OpenRouter | Google open model |
+
+All use `provider_type: openai_compatible` — `OpenAICompatibleProcessor` handles them with zero new code.
+Claude stays in catalog for completeness but is not the default. Default remains `gemini-2.5-flash`.
+
+#### `dashboard-sample-toggle`
+
+Sidebar radio added to `app/dashboard.py`:
+
+```
+Data source
+  ● Benchmark samples   (30 docs, offline, always available)
+  ○ Full dataset        (requires python main.py, up to 100+ docs)
+```
+
+When "Full dataset" is selected and `data/processed/` does not exist: show a clear inline
+error — `"Run python main.py first to download the full dataset."` No silent failure.
+
+**Task table:**
 
 | Task | Implementation | Test |
 |---|---|---|
-| `export-benchmark-samples` | One-time script → `data/benchmark_samples/` | Assert JSON schema valid, 30 docs each |
-| `benchmark-sample-loader` | `benchmark_sample_loader.py` | Unit: loads samples, returns DocumentInput list |
-| `catalog-expansion` | 5–10 OpenRouter model entries in `config.yaml` | Config validation test |
-| `dashboard-sample-toggle` | Radio: "Benchmark samples" vs "Live download" | Unit: correct loader used |
+| `export-benchmark-samples` | `scripts/export_benchmark_samples.py` | Assert JSON schema valid, 30 docs each |
+| `benchmark-sample-loader` | `src/pipeline/benchmark_sample_loader.py` | Unit: loads samples, returns `DocumentInput` list |
+| `catalog-expansion` | `configs/config.yaml` | Config validation test |
+| `dashboard-sample-toggle` | `app/dashboard.py` | Unit: correct loader called per radio selection |
+
+**New / changed files:**
+
+```
+scripts/
+└── export_benchmark_samples.py   ← one-time export (run once, commit output)
+
+data/benchmark_samples/
+├── translation_de_en.json        ← committed
+├── summarisation_en.json         ← committed
+└── README.md                     ← committed
+
+src/pipeline/
+└── benchmark_sample_loader.py    ← new loader
+
+configs/config.yaml               ← 6 new model entries
+
+app/dashboard.py                  ← data source radio toggle
+```
 
 ---
 
-### Phase 3c — Polish + README
+### Phase 3c — Prompt editor + polish
 
-**Goal:** Repo is genuinely useful to someone who clones it for the first time.
+**Goal:** Repo is genuinely useful to someone who clones it for the first time. Prompts are visible, editable, and versioned without leaving the dashboard.
+
+#### Prompt viewer + editor
+
+New sidebar section in `app/dashboard.py`:
+
+1. **View** — expander shows the current system prompt and user template for the selected task (read from `configs/prompts.yaml`)
+2. **Edit** — `st.text_area` lets the user modify either field inline
+3. **Save as new version** — button writes the edited prompts back to `configs/prompts.yaml` with an incremented `version` field and snapshots the old version to `configs/prompt_history/`
+
+```
+configs/
+├── prompts.yaml                                     ← active prompts (always current)
+└── prompt_history/
+    ├── v1_20260704_090000_original.yaml
+    ├── v2_20260706_143000_shorter_summary.yaml
+    └── ...
+```
+
+Each snapshot file contains: version number, timestamp, author note (user types a short description), and full prompt content.
+
+Every `PipelineResult` records the prompt version used — results are always traceable to the exact prompt that produced them.
+
+#### Session run history
+
+Last 5 benchmark runs stored in `st.session_state`. Shown as a collapsible section in the sidebar: timestamp, task, models used, top metric scores. Click any past run to restore its report to the main view.
+
+#### README overhaul
+
+- Screenshot of dashboard (pre-run context + post-run results)
+- One-command quickstart (`uv run streamlit run app/dashboard.py`)
+- Model catalog table with pricing
+- Architecture diagram
+
+#### `docs/MODELS.md`
+
+Which models were tested, smoke-test scores, known quirks (e.g., "DeepSeek-V3 occasionally returns malformed JSON on extraction step").
+
+#### `Makefile`
+
+```makefile
+setup:     # uv sync + python main.py (full HF dataset download)
+run:       # uv run streamlit run app/dashboard.py
+test:      # uv run pytest
+```
+
+**Task table:**
 
 | Task | Notes |
 |---|---|
-| `README overhaul` | Screenshots of dashboard, one-command quickstart, model table, architecture diagram |
-| `prompt versioning` | Add `version` field to `configs/prompts.yaml`; thread through `PipelineResult` |
-| `session run history` | Last 5 runs stored in `st.session_state`; shown as collapsible in sidebar |
-| `docs/MODELS.md` | Which models were tested, smoke-test results, known quirks |
+| `prompt-viewer` | Read `prompts.yaml`, render in sidebar expander |
+| `prompt-editor` | `st.text_area` edit + save, write to `prompts.yaml` |
+| `prompt-versioning` | Snapshot to `configs/prompt_history/`, increment version field |
+| `prompt-version-in-result` | Thread version string through `PipelineResult` |
+| `session-run-history` | Last 5 runs in session_state, collapsible sidebar |
+| `README-overhaul` | Screenshot, quickstart, model table, diagram |
+| `docs/MODELS.md` | Tested models, known quirks |
+| `Makefile` | `setup`, `run`, `test` targets |
 
 ---
 
-## What this does NOT need (was in old Phase 3)
+## What this does NOT need
 
 | Removed | Why |
 |---|---|
 | BYOK session key handling | Keys live in `.env` — no public deployment, no problem |
 | Rate limits (max 5 models, max 20 docs) | Your machine, your API budget |
 | Key redaction in logs | No public server, no risk |
-| HF Spaces deployment | Skip until there's evidence of demand |
+| HF Spaces deployment | Phase 4 only — if there is evidence of demand |
 | Gradio | Streamlit is simpler; migration later if needed |
 | Cost preview before run | Nice-to-have but not critical locally |
 | Scanned PDF / OCR | Out of scope entirely |
-
-File upload (`Phase 3b` in old plan) is also dropped. The use case was weak ("compare outputs without ground truth") and adds complexity with no payoff.
+| Docker | Phase 4 — once project is stable enough for external users |
 
 ---
 
 ## Git workflow
 
-Same as always — branch off `dev`, one branch per sub-phase:
-
 | Branch | Scope |
 |---|---|
-| `feature/phase3a-dashboard` | Streamlit shell + BenchmarkRunner wiring + charts + export |
-| `feature/phase3b-samples` | Static benchmark samples + benchmark-sample-loader + catalog expansion |
-| `feature/phase3c-polish` | README screenshots, prompt versioning, run history, MODELS.md |
+| `feature/phase3a-dashboard` | ✅ merged |
+| `feature/phase3b-samples` | ✅ merged |
+| `feature/phase3c-polish` | Prompt editor/versioning, run history, README, Makefile |
 
 Final Phase 3 completion: PR **`dev` → `main`**, tag `v0.3.0`.
 
@@ -173,9 +270,9 @@ Final Phase 3 completion: PR **`dev` → `main`**, tag `v0.3.0`.
 | Version | Item |
 |---|---|
 | `0.2.1` | Phase 2b complete — manifest, truncation, CI, RUNBOOK ✅ |
-| `0.2.2` | Phase 3a — Streamlit dashboard MVP |
-| `0.2.3` | Phase 3b — static benchmark samples + catalog expansion |
-| `0.3.0` | Phase 3c — polish + README; promote to `main` |
+| `0.2.2` | Phase 3a — Streamlit dashboard MVP ✅ |
+| `0.2.3` | (skipped — folded into 0.3.0) |
+| `0.3.0` | Phase 3a + 3b — dashboard, offline samples, catalog expansion ✅ |
 
 ---
 
@@ -183,15 +280,15 @@ Final Phase 3 completion: PR **`dev` → `main`**, tag `v0.3.0`.
 
 **Do not start Phase 4 until:**
 
-- [ ] Dashboard runs end-to-end with at least 2 models
-- [ ] Static benchmark samples committed and loader tested
+- [x] Dashboard runs end-to-end with at least 2 models
+- [x] Static benchmark samples committed and loader tested
 - [ ] README shows a screenshot and a one-command quickstart
 - [ ] CI green on `main` after Phase 3c merge
 
-Then say **"start phase 4"** — which is where a public URL, HF Spaces, or any deployment story lives if it's warranted.
+Phase 4 is where Docker, a public URL, HF Spaces, or any deployment story lives — if warranted.
 
 ---
 
 ## Recommended next action
 
-Say **"start phase 3a"** to begin `feature/phase3a-dashboard`.
+Say **"implement phase 3c"** to begin prompt editor, run history, and README polish.

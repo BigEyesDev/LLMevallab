@@ -182,15 +182,22 @@ class BenchmarkRunner:
         task: str | PipelineTask,
         model_keys: list[str],
         sample_size: int,
+        documents: list[DocumentInput] | None = None,
     ) -> BenchmarkReport:
-        """Benchmark each model on an identical document slice."""
+        """Benchmark each model on an identical document slice.
+
+        If ``documents`` is provided those docs are used directly and
+        ``sample_size`` is ignored for loading. ``BenchmarkReport.sample_size``
+        always reflects the actual number of docs evaluated.
+        """
         if isinstance(task, str):
             task = PipelineTask(task)
 
         for model_key in model_keys:
             validate_model_key(model_key, self.config)
 
-        documents = load_documents_for_task(task, self.config, sample_size)
+        if documents is None:
+            documents = load_documents_for_task(task, self.config, sample_size)
         ground_truth_path = resolve_ground_truth_path(task, self.config)
         catalog = get_model_catalog(self.config)
         evaluator = Evaluator(self.config)
@@ -222,7 +229,7 @@ class BenchmarkRunner:
 
         return BenchmarkReport(
             task=task.value,
-            sample_size=len(documents),
+            sample_size=len(documents),  # reflects actual docs, not the sample_size arg
             results=model_results,
         )
 

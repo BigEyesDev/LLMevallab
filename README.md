@@ -28,4 +28,16 @@ The system is **model-agnostic by design** i.e. you can swap or add LLM provider
 
 ---
 
+## Dashboard (Phase 3a)
+
+```bash
+uv run streamlit run app/dashboard.py
+```
+
+Opens a local Streamlit UI where you can pick a task (translation or summarisation), select models from the catalog, set a sample size, run the benchmark, and explore quality metrics, cost, and latency side-by-side. Export results as JSON or CSV.
+
+**Prerequisites:** API keys in `.env` (see `.env.example`). Datasets prepared via `python main.py`.
+
+---
+
 

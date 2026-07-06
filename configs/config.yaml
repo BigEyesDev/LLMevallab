@@ -1,17 +1,18 @@
 pipeline:
   target_language: "en"
-  max_document_length: 2000       # chars — default truncation limit (overridden per task below)
+  max_document_length: 30000      # chars — safety-net fallback only; per-task limits below take precedence
   batch_size: 5                   # documents per run
   save_raw_llm_output: true       # useful for debugging
 
-  # Per-task truncation limits (chars).
-  # Translation documents are short EU parliament sentences; 2000 chars is plenty.
-  # Summarisation documents are full news articles; 8000 chars preserves enough context
-  # for ROUGE/BERTScore to be meaningful while keeping API costs predictable.
+  # Per-task hard caps (chars) — act as a safety net for unexpectedly large documents only.
+  # Set well above the longest docs in the benchmark datasets so nothing is truncated
+  # in normal use. Raise further if you add a dataset with longer documents.
+  #   EuroParl translation:  longest doc ≈ 5,000 chars  → cap at 15,000
+  #   CNN/DailyMail summary: longest doc ≈ 20,000 chars → cap at 30,000
   max_document_length_per_task:
-    translation: 2000
-    summarisation: 8000
-    full: 4000
+    translation: 15000
+    summarisation: 30000
+    full: 15000
 
 models:
   default: "gemini-2.5-flash"
@@ -57,8 +58,8 @@ models:
       temperature: 0.1
       max_output_tokens: 2048
       pricing:
-        input_per_1m: 0.13
-        output_per_1m: 0.40
+        input_per_1m: 0.10    # openrouter live: $0.10/1M in
+        output_per_1m: 0.32   # openrouter live: $0.32/1M out
 
     deepseek-v3:
       provider_type: openai_compatible
@@ -68,8 +69,78 @@ models:
       temperature: 0.1
       max_output_tokens: 2048
       pricing:
-        input_per_1m: 0.14
-        output_per_1m: 0.28
+        input_per_1m: 0.20    # openrouter live: $0.20/1M in
+        output_per_1m: 0.80   # openrouter live: $0.80/1M out
+
+    qwen3-30b:
+      provider_type: openai_compatible
+      model_id: "qwen/qwen3-30b-a3b"
+      base_url: "https://openrouter.ai/api/v1"
+      api_key_env: OPENROUTER_API_KEY
+      temperature: 0.1
+      max_output_tokens: 2048
+      pricing:
+        input_per_1m: 0.12    # openrouter live: $0.12/1M in
+        output_per_1m: 0.50   # openrouter live: $0.50/1M out
+
+    qwen2.5-72b:
+      provider_type: openai_compatible
+      model_id: "qwen/qwen-2.5-72b-instruct"
+      base_url: "https://openrouter.ai/api/v1"
+      api_key_env: OPENROUTER_API_KEY
+      temperature: 0.1
+      max_output_tokens: 2048
+      pricing:
+        input_per_1m: 0.36    # openrouter live: $0.36/1M in
+        output_per_1m: 0.40   # openrouter live: $0.40/1M out
+
+    glm-4-7:
+      # thudm/glm-z1-32b is no longer listed on OpenRouter; z-ai/glm-4.7 is the
+      # current Zhipu AI GLM-4 flagship (same provider, same multilingual strength).
+      provider_type: openai_compatible
+      model_id: "z-ai/glm-4.7"
+      base_url: "https://openrouter.ai/api/v1"
+      api_key_env: OPENROUTER_API_KEY
+      temperature: 0.1
+      max_output_tokens: 2048
+      pricing:
+        input_per_1m: 0.40    # openrouter live: $0.40/1M in
+        output_per_1m: 1.75   # openrouter live: $1.75/1M out
+
+    mistral-small-3.2:
+      # mistralai/mistral-7b-instruct is no longer on OpenRouter; mistral-small-3.2
+      # is Mistral's current small model — European, strong multilingual, 24B params.
+      provider_type: openai_compatible
+      model_id: "mistralai/mistral-small-3.2-24b-instruct"
+      base_url: "https://openrouter.ai/api/v1"
+      api_key_env: OPENROUTER_API_KEY
+      temperature: 0.1
+      max_output_tokens: 2048
+      pricing:
+        input_per_1m: 0.075   # openrouter live: $0.075/1M in
+        output_per_1m: 0.20   # openrouter live: $0.20/1M out
+
+    phi-4:
+      provider_type: openai_compatible
+      model_id: "microsoft/phi-4"
+      base_url: "https://openrouter.ai/api/v1"
+      api_key_env: OPENROUTER_API_KEY
+      temperature: 0.1
+      max_output_tokens: 2048
+      pricing:
+        input_per_1m: 0.07    # openrouter live: $0.07/1M in
+        output_per_1m: 0.14   # openrouter live: $0.14/1M out
+
+    gemma-3-27b:
+      provider_type: openai_compatible
+      model_id: "google/gemma-3-27b-it"
+      base_url: "https://openrouter.ai/api/v1"
+      api_key_env: OPENROUTER_API_KEY
+      temperature: 0.1
+      max_output_tokens: 2048
+      pricing:
+        input_per_1m: 0.08    # openrouter live: $0.08/1M in
+        output_per_1m: 0.16   # openrouter live: $0.16/1M out
 
 # ─── Datasets ──────────────────────────────────────────────────────
 # sample_size controls how many docs download_and_prepare() saves.
