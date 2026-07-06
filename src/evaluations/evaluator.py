@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 # each metric is only meaningful in the right context.
 TASK_METRICS: dict[PipelineTask, list[str]] = {
     PipelineTask.TRANSLATION:   ["bleu", "bertscore", "comet"],
-    PipelineTask.SUMMARISATION: ["rouge", "bertscore"],
-    PipelineTask.FULL:          ["bleu", "rouge", "bertscore", "comet"],
+    PipelineTask.SUMMARISATION: ["rouge", "bertscore", "llm_judge"],
+    PipelineTask.FULL:          ["bleu", "rouge", "bertscore", "comet", "llm_judge"],
 }
 
 
@@ -385,6 +385,7 @@ class Evaluator:
         eval_cfg = config.get("evaluation", {})
         self.bertscore_model = eval_cfg.get("bertscore_model", "microsoft/deberta-xlarge-mnli")
         self.comet_model = eval_cfg.get("comet_model", "Unbabel/wmt22-comet-da")
+        self.judge_model_key = eval_cfg.get("judge_model", "gpt-4o-mini")
 
     def run_on_manifest(
         self,
@@ -518,6 +519,8 @@ class Evaluator:
             metrics=metrics_to_run,
             bertscore_model=self.bertscore_model,
             comet_model=self.comet_model,
+            config=self.config,
+            judge_model_key=self.judge_model_key,
         )
         all_scores = runner.run_all(metric_inputs)
         aggregate = aggregate_scores(all_scores)

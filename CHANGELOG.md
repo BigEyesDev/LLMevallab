@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — LLM-as-Judge summarisation metric
+
+- **`LLMJudgeMetric`** and **`JudgeClient`** — configurable judge model scores faithfulness, completeness, and coherence (1-5, normalized to 0-1) by comparing summaries against source documents.
+- **`llm_judge`** wired into `MetricsRunner`, summarisation metrics in `configs/config.yaml`, and `evaluation.judge_model` config key (default `gpt-4o-mini`).
+- Per-document **latency and token cost** tracked in `EvaluationScore.metadata`.
+- **`tests/test_judge.py`** and extended **`tests/test_metrics.py`** with mocked judge responses.
+
 ### Added — COMET translation metric
 
 - **`COMETMetric`** in `src/evaluations/metrics.py` — reference-based neural MT evaluation via `unbabel-comet` (lazy import; default model `Unbabel/wmt22-comet-da`).

@@ -152,6 +152,7 @@ See [RUNBOOK.md](RUNBOOK.md) for operational details.
 | **BLEU** | Translation | > 0.30 |
 | **COMET** | Translation | > 0.80 |
 | **ROUGE-L** | Summarisation | > 0.25 |
+| **LLM Judge** | Summarisation | > 0.60 (normalized mean) |
 | **BERTScore** | Both | > 0.70 (F1) |
 
 ---

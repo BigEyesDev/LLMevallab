@@ -256,6 +256,81 @@ class COMETMetric:
         return scores
 
 
+class LLMJudgeMetric:
+    """
+    LLM-as-Judge — uses a separate LLM to score summary quality.
+
+    Evaluates faithfulness, completeness, and coherence on a 1-5 scale,
+    normalized to 0-1 for the primary score (mean of the three dimensions).
+
+    Requires source document text in MetricInput.source.
+    Typical use: summarisation quality (reference-free or with reference in metadata)
+
+    Tracks per-call latency and token cost in EvaluationScore.metadata.
+    """
+
+    name = "llm_judge"
+
+    def __init__(
+        self,
+        config: dict,
+        judge_model_key: str = "gpt-4o-mini",
+        client: object | None = None,
+    ):
+        self.judge_model_key = judge_model_key
+        self._config = config
+        self._client = client
+
+    def _get_client(self):
+        if self._client is not None:
+            return self._client
+        from src.evaluations.judge import JudgeClient
+
+        self._client = JudgeClient(self._config, self.judge_model_key)
+        return self._client
+
+    def score(self, inputs: list[MetricInput]) -> list[EvaluationScore]:
+        from src.evaluations.judge import normalize_score
+
+        client = self._get_client()
+        scores: list[EvaluationScore] = []
+
+        for item in inputs:
+            if not item.source:
+                logger.warning(f"[{item.doc_id}] No source text for LLM judge — skipping.")
+                continue
+
+            dims, _latency_ms, metadata = client.evaluate(item.source, item.hypothesis)
+            normalized = {
+                k: normalize_score(dims[k])
+                for k in ("faithfulness", "completeness", "coherence")
+            }
+            overall = round(sum(normalized.values()) / 3, 4)
+
+            scores.append(EvaluationScore(
+                doc_id=item.doc_id,
+                metric_name=self.name,
+                score=overall,
+                metadata={
+                    **metadata,
+                    "faithfulness": dims["faithfulness"],
+                    "completeness": dims["completeness"],
+                    "coherence": dims["coherence"],
+                    "faithfulness_norm": normalized["faithfulness"],
+                    "completeness_norm": normalized["completeness"],
+                    "coherence_norm": normalized["coherence"],
+                },
+            ))
+
+        if scores:
+            avg = sum(s.score for s in scores) / len(scores)
+            logger.info(
+                f"LLM judge average score: {avg:.4f} "
+                f"(model={self.judge_model_key}, n={len(scores)})"
+            )
+        return scores
+
+
 class MetricsRunner:
     """
     Convenience class that runs all configured metrics in one call.
@@ -270,6 +345,7 @@ class MetricsRunner:
         "rouge": ROUGEMetric,
         "bertscore": BERTScoreMetric,
         "comet": COMETMetric,
+        "llm_judge": LLMJudgeMetric,
     }
 
     def __init__(
@@ -277,6 +353,8 @@ class MetricsRunner:
         metrics: list[str],
         bertscore_model: str = "microsoft/deberta-xlarge-mnli",
         comet_model: str = "Unbabel/wmt22-comet-da",
+        config: dict | None = None,
+        judge_model_key: str = "gpt-4o-mini",
     ):
         self._metrics = []
         for name in metrics:
@@ -286,6 +364,10 @@ class MetricsRunner:
                 self._metrics.append(BERTScoreMetric(model_type=bertscore_model))
             elif name == "comet":
                 self._metrics.append(COMETMetric(model_name=comet_model))
+            elif name == "llm_judge":
+                if config is None:
+                    raise ValueError("LLM judge metric requires config dict.")
+                self._metrics.append(LLMJudgeMetric(config=config, judge_model_key=judge_model_key))
             else:
                 self._metrics.append(self.AVAILABLE_METRICS[name]())
 

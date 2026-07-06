@@ -66,3 +66,15 @@ Every `PipelineResult` and `BenchmarkReport` records the prompt version used at 
 Edit prompts in the dashboard sidebar or directly in YAML; saved edits snapshot the previous version to `configs/prompt_history/`.
 
 See [docs/VERSIONING.md](VERSIONING.md) for the distinction between package version and prompt version.
+
+---
+
+## LLM-as-Judge (evaluation)
+
+Summarisation evaluation can use **`llm_judge`** — a separate model scores faithfulness, completeness, and coherence (1-5) by reading the source article and generated summary.
+
+| Config key | Default | Notes |
+|---|---|---|
+| `evaluation.judge_model` | `gpt-4o-mini` | Catalog key; requires the matching `api_key_env` in `.env` |
+
+Judge calls incur API cost and latency — both are recorded per document in the evaluation report metadata. Disable by removing `llm_judge` from `evaluation.metrics.summarisation`.

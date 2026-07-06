@@ -171,8 +171,10 @@ evaluation:
     summarisation:
       - rouge
       - bertscore
+      - llm_judge
   bertscore_model: "microsoft/deberta-base"
   comet_model: "Unbabel/wmt22-comet-da"
+  judge_model: "gpt-4o-mini"
   output_path: "outputs/results/"
 
 paths:

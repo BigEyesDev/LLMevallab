@@ -5,7 +5,7 @@ import pytest
 
 from src.core.config import load_config
 from src.evaluations.evaluator import get_task_metrics
-from src.evaluations.metrics import COMETMetric, MetricInput, MetricsRunner
+from src.evaluations.metrics import COMETMetric, LLMJudgeMetric, MetricInput, MetricsRunner
 from src.pipeline.orchestrator import PipelineTask
 
 
@@ -88,3 +88,93 @@ def test_config_translation_metrics_include_comet():
     config = load_config()
     translation_metrics = config["evaluation"]["metrics"]["translation"]
     assert "comet" in translation_metrics
+
+
+def test_llm_judge_metric_scores_with_mock_client():
+    mock_client = MagicMock()
+    mock_client.evaluate.return_value = (
+        {"faithfulness": 5, "completeness": 4, "coherence": 3},
+        120.5,
+        {
+            "judge_model": "gpt-4o-mini",
+            "judge_model_key": "gpt-4o-mini",
+            "latency_ms": 120.5,
+            "input_tokens": 500,
+            "output_tokens": 50,
+            "cost_usd": 0.0001,
+            "reasoning": "Good summary.",
+        },
+    )
+
+    metric = LLMJudgeMetric(config={}, judge_model_key="gpt-4o-mini", client=mock_client)
+    inputs = [
+        MetricInput(
+            doc_id="d1",
+            hypothesis="A short summary.",
+            reference="Reference summary.",
+            source="Long article text about an event.",
+        )
+    ]
+
+    scores = metric.score(inputs)
+
+    assert len(scores) == 1
+    assert scores[0].metric_name == "llm_judge"
+    assert scores[0].score == pytest.approx(0.75)  # mean of 1.0, 0.75, 0.5
+    assert scores[0].metadata["faithfulness"] == 5
+    assert scores[0].metadata["latency_ms"] == 120.5
+    assert scores[0].metadata["cost_usd"] == 0.0001
+    mock_client.evaluate.assert_called_once_with(
+        "Long article text about an event.",
+        "A short summary.",
+    )
+
+
+def test_llm_judge_skips_missing_source():
+    mock_client = MagicMock()
+    metric = LLMJudgeMetric(config={}, client=mock_client)
+    inputs = [
+        MetricInput(doc_id="d1", hypothesis="Summary.", reference="Ref.", source=""),
+    ]
+
+    scores = metric.score(inputs)
+
+    assert scores == []
+    mock_client.evaluate.assert_not_called()
+
+
+def test_metrics_runner_includes_llm_judge():
+    mock_client = MagicMock()
+    mock_client.evaluate.return_value = (
+        {"faithfulness": 4, "completeness": 4, "coherence": 4},
+        50.0,
+        {"judge_model": "gpt-4o-mini", "judge_model_key": "gpt-4o-mini",
+         "latency_ms": 50.0, "input_tokens": 100, "output_tokens": 20,
+         "cost_usd": 0.0, "reasoning": ""},
+    )
+
+    runner = MetricsRunner(
+        metrics=["llm_judge"],
+        config={"models": {"catalog": {}}},
+        judge_model_key="gpt-4o-mini",
+    )
+    runner._metrics[0]._client = mock_client
+
+    inputs = [
+        MetricInput(
+            doc_id="d1",
+            hypothesis="Summary.",
+            reference="Ref.",
+            source="Article body.",
+        )
+    ]
+    result = runner.run_all(inputs)
+
+    assert "llm_judge" in result
+    assert result["llm_judge"][0].score == pytest.approx(0.75)
+
+
+def test_config_summarisation_metrics_include_llm_judge():
+    config = load_config()
+    summarisation_metrics = config["evaluation"]["metrics"]["summarisation"]
+    assert "llm_judge" in summarisation_metrics
