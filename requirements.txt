@@ -26,6 +26,9 @@ tqdm==4.66.4
 jupyter==1.0.0
 ipykernel==6.29.4
 
+# Dashboard
+streamlit>=1.35.0
+
 # Testing & resilience
 pytest==8.2.0
 tenacity>=8.2.0
