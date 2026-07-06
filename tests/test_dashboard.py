@@ -234,6 +234,47 @@ def test_data_source_constants_defined():
     assert _DATA_SOURCE_FULL == "Full dataset"
 
 
+def test_clear_run_state_removes_report_keys():
+    from app.dashboard import _clear_run_state
+
+    fake_state = {
+        "report": "dummy",
+        "report_task": "summarisation",
+        "_from_cache": True,
+        "_doc_cb_d1": True,
+    }
+    with patch("app.dashboard.st.session_state", fake_state):
+        _clear_run_state()
+
+    assert "report" not in fake_state
+    assert "report_task" not in fake_state
+    assert "_from_cache" not in fake_state
+    assert fake_state["_doc_cb_d1"] is True  # doc selection preserved
+
+
+def test_has_stored_report():
+    from app.dashboard import _has_stored_report
+
+    with patch("app.dashboard.st.session_state", {}):
+        assert not _has_stored_report()
+
+    with patch("app.dashboard.st.session_state", {"report": object()}):
+        assert _has_stored_report()
+
+
+def test_selected_doc_ids_returns_checked_docs():
+    from app.dashboard import _selected_doc_ids
+
+    docs = [
+        {"doc_id": "d1", "raw_text": "a"},
+        {"doc_id": "d2", "raw_text": "b"},
+    ]
+    fake_state = {"_doc_cb_d1": True, "_doc_cb_d2": False}
+
+    with patch("app.dashboard.st.session_state", fake_state):
+        assert _selected_doc_ids(docs) == ["d1"]
+
+
 # ---------------------------------------------------------------------------
 # Unit: _get_selected_docs — reads from session_state
 # ---------------------------------------------------------------------------

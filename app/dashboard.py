@@ -220,6 +220,16 @@ def _cache_key(task: str, model_keys: list[str], doc_ids: list[str]) -> tuple:
     return (task, tuple(sorted(model_keys)), tuple(sorted(doc_ids)))
 
 
+def _clear_run_state() -> None:
+    """Drop stored results so the pre-run setup view is shown again."""
+    for key in ("report", "report_task", "_from_cache"):
+        st.session_state.pop(key, None)
+
+
+def _selected_doc_ids(all_docs: list[dict]) -> list[str]:
+    return [d["doc_id"] for d in _get_selected_docs(all_docs)]
+
+
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
@@ -228,11 +238,42 @@ _DATA_SOURCE_SAMPLES = "Benchmark samples"
 _DATA_SOURCE_FULL = "Full dataset"
 
 
-def _sidebar(config: dict) -> tuple[str, list[str], int, bool, str]:
+def _inject_sidebar_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"] .st-key-sidebar_configure_new_run button[kind="secondary"],
+        [data-testid="stSidebar"] .st-key-sidebar_configure_new_run button[kind="primary"] {
+            background-color: #22c55e !important;
+            color: #ffffff !important;
+            border: 1px solid #16a34a !important;
+        }
+        [data-testid="stSidebar"] .st-key-sidebar_configure_new_run button:hover:not(:disabled) {
+            background-color: #16a34a !important;
+            border-color: #15803d !important;
+            color: #ffffff !important;
+        }
+        [data-testid="stSidebar"] .st-key-sidebar_configure_new_run button:disabled {
+            background-color: #1f2937 !important;
+            color: #6b7280 !important;
+            border-color: #374151 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _has_stored_report() -> bool:
+    return st.session_state.get("report") is not None
+
+
+def _sidebar_settings(config: dict) -> tuple[str, list[str], int]:
     catalog: dict = get_model_catalog(config)
     default_model = config.get("models", {}).get("default", list(catalog.keys())[0])
 
     with st.sidebar:
+        _inject_sidebar_styles()
         st.header("Benchmark Settings")
 
         task: str = st.selectbox("Task", _RUNNABLE_TASKS)
@@ -251,13 +292,11 @@ def _sidebar(config: dict) -> tuple[str, list[str], int, bool, str]:
             help="Sets the initial document selection. You can override it in the dataset grid below.",
         )
 
-        run_clicked: bool = st.button(
-            "Run Benchmark",
-            disabled=not model_keys,
-            use_container_width=True,
-            type="primary",
-        )
+    return task, model_keys, sample_size
 
+
+def _sidebar_data_source() -> str:
+    with st.sidebar:
         st.divider()
         data_source: str = st.radio(
             "Data source",
@@ -276,8 +315,36 @@ def _sidebar(config: dict) -> tuple[str, list[str], int, bool, str]:
             ),
         )
         st.caption("API keys from `.env`.")
+    return data_source
 
-    return task, model_keys, sample_size, run_clicked, data_source
+
+def _sidebar_run_button(model_keys: list[str]) -> bool:
+    with st.sidebar:
+        return st.button(
+            "Run Benchmark",
+            disabled=not model_keys,
+            width="stretch",
+            type="primary",
+        )
+
+
+def _sidebar_configure_button() -> None:
+    """Rendered after the run handler so enabled state reflects stored results."""
+    has_report = _has_stored_report()
+    with st.sidebar:
+        if st.button(
+            "Configure new run",
+            key="sidebar_configure_new_run",
+            width="stretch",
+            disabled=not has_report,
+            help=(
+                "Return to document selection and model setup. Keeps your current checkbox choices."
+                if has_report
+                else "Available after you run a benchmark."
+            ),
+        ):
+            _clear_run_state()
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -734,9 +801,11 @@ def main() -> None:
     )
 
     config, prompts = _load_resources(*_resource_mtimes())
-    task, model_keys, sample_size, run_clicked, data_source = _sidebar(config)
+    task, model_keys, sample_size = _sidebar_settings(config)
+    run_clicked = _sidebar_run_button(model_keys)
 
     # Load documents for the selected data source
+    data_source = _sidebar_data_source()
     if data_source == _DATA_SOURCE_SAMPLES:
         all_docs = _load_benchmark_samples(task)
     else:
@@ -776,6 +845,9 @@ def main() -> None:
     elif run_clicked and not selected_docs:
         st.warning("No documents selected — check at least one doc in the grid below.", icon="⚠️")
 
+    # Render after run handler so enabled state reflects results stored this pass.
+    _sidebar_configure_button()
+
     # ── Render ───────────────────────────────────────────────────────────────
     report: BenchmarkReport | None = st.session_state.get("report")
     if report and st.session_state.get("report_task") != task:
@@ -787,7 +859,32 @@ def main() -> None:
 
     from_cache = st.session_state.get("_from_cache", False)
     cache_badge = "  ·  💾 from cache" if from_cache else ""
-    st.subheader(f"Results — task: {report.task}  ·  {report.sample_size} docs{cache_badge}")
+    selected_ids = _selected_doc_ids(all_docs)
+
+    st.subheader(
+        f"Results — task: {report.task}  ·  {report.sample_size} docs{cache_badge}"
+    )
+    with st.expander(
+        f"Change document selection & re-run ({len(selected_ids)} docs selected)",
+        expanded=False,
+    ):
+        st.caption(
+            "Pick different documents below, then click **Run Benchmark** in the sidebar. "
+            "Results update in place; identical task/model/doc combos load from cache."
+        )
+        truncation_limit: int = (
+            config.get("pipeline", {})
+            .get("max_document_length_per_task", {})
+            .get(task, config.get("pipeline", {}).get("max_document_length", 2000))
+        )
+        _render_doc_grid(
+            all_docs,
+            sample_size,
+            _TASK_META.get(task, {}),
+            truncation_limit,
+            model_keys,
+            get_model_catalog(config),
+        )
 
     df = _to_dataframe(report)
     colors = _model_colors([r.model_key for r in report.results])
