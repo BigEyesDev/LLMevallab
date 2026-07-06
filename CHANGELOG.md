@@ -21,6 +21,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`MetricInput.source`** — source document text passed to COMET for hypothesis/reference pairing.
 - **`tests/test_metrics.py`** — unit tests with mocked COMET model (no HF download in CI).
 
+### Added — Dashboard config-driven metrics
+
+- **`src/evaluations/metric_registry.py`** — single source of truth for metric display names, explainers, verdict thresholds, and task metric lists (reads from `configs/config.yaml`).
+- **`app/dashboard.py`** — pre-run explainers, bar charts, insights, and cost scatter now derive from config + registry; COMET and LLM Judge fully visible without hardcoded dashboard updates.
+
 ### Added — Prompt editor, run history, polish (Phase 3c)
 
 - **`src/pipeline/prompt_manager.py`** — load, version, and snapshot prompt templates; snapshots written to `configs/prompt_history/` on save.

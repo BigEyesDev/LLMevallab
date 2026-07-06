@@ -119,24 +119,62 @@ def test_to_dataframe_multiple_models():
 # Unit: _quality_context — score-to-verdict mapping
 # ---------------------------------------------------------------------------
 
+def test_to_dataframe_comet_and_llm_judge_columns():
+    from app.dashboard import _to_dataframe
+
+    report = BenchmarkReport(
+        task="translation",
+        sample_size=1,
+        results=[
+            ModelBenchmarkResult(
+                model_key="m1",
+                model_id="org/m1",
+                quality_metrics={"comet": 0.88, "bleu": 0.35},
+                n_docs=1,
+            )
+        ],
+    )
+    df = _to_dataframe(report)
+    assert "COMET" in df.columns
+    assert "BLEU" in df.columns
+
+
+def test_top_metric_scores_uses_display_names():
+    from app.dashboard import _top_metric_scores
+
+    report = BenchmarkReport(
+        task="summarisation",
+        sample_size=1,
+        results=[
+            ModelBenchmarkResult(
+                model_key="m1",
+                model_id="org/m1",
+                quality_metrics={"llm_judge": 0.82},
+                n_docs=1,
+            )
+        ],
+    )
+    assert _top_metric_scores(report)["LLM Judge"] == 0.82
+
+
 def test_quality_context_bertscore_excellent():
-    from app.dashboard import _quality_context
-    assert _quality_context("BERTScore", 0.85) == "excellent"
+    from src.evaluations.metric_registry import quality_context
+    assert quality_context("BERTScore", 0.85) == "excellent"
 
 
 def test_quality_context_bertscore_good():
-    from app.dashboard import _quality_context
-    assert _quality_context("BERTScore", 0.72) == "good"
+    from src.evaluations.metric_registry import quality_context
+    assert quality_context("BERTScore", 0.72) == "good"
 
 
 def test_quality_context_rouge_moderate():
-    from app.dashboard import _quality_context
-    assert _quality_context("ROUGE-L", 0.20) == "moderate"
+    from src.evaluations.metric_registry import quality_context
+    assert quality_context("ROUGE-L", 0.20) == "moderate"
 
 
 def test_quality_context_bleu_low():
-    from app.dashboard import _quality_context
-    assert _quality_context("BLEU", 0.05) == "low"
+    from src.evaluations.metric_registry import quality_context
+    assert quality_context("BLEU", 0.05) == "low"
 
 
 # ---------------------------------------------------------------------------
@@ -305,19 +343,20 @@ def _mock_progress():
     return p
 
 
-def _run_progress_patched(runner, task, model_keys, documents):
+def _run_progress_patched(runner, task, model_keys, documents, config=None):
     """Run _run_with_progress with all Streamlit calls mocked."""
     from app.dashboard import _run_with_progress
 
     mock_progress = MagicMock()
     mock_empty = MagicMock()
+    config = config or {"evaluation": {"metrics": {"summarisation": ["rouge", "bertscore"]}}}
 
     with (
         patch("app.dashboard.st.progress", return_value=mock_progress),
         patch("app.dashboard.st.empty", return_value=mock_empty),
         patch("app.dashboard.time.perf_counter", return_value=0.0),
     ):
-        return _run_with_progress(runner, task, model_keys, documents)
+        return _run_with_progress(runner, task, model_keys, documents, config)
 
 
 def test_run_with_progress_calls_runner_per_model():

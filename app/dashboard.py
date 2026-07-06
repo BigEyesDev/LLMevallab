@@ -15,6 +15,14 @@ from dotenv import load_dotenv
 from src.core.config import get_model_catalog, get_processed_path, load_config
 from src.core.models import BenchmarkReport, DocumentInput, ModelBenchmarkResult
 from src.evaluations.benchmark import BenchmarkRunner
+from src.evaluations.metric_registry import (
+    display_name,
+    get_task_metric_display_names,
+    metric_info_for_display,
+    primary_scatter_metric,
+    quality_columns_in_dataframe,
+    quality_context,
+)
 from src.pipeline.benchmark_sample_loader import BenchmarkSampleLoader
 from src.pipeline.orchestrator import PipelineTask, load_prompts
 from src.pipeline.prompt_manager import (
@@ -29,46 +37,6 @@ load_dotenv()
 # Constants
 # ---------------------------------------------------------------------------
 
-_METRIC_DISPLAY: dict[str, str] = {
-    "bleu": "BLEU",
-    "rouge": "ROUGE-L",
-    "rouge_l": "ROUGE-L",   # evaluator emits "rouge_l"; keep "rouge" for back-compat
-    "bertscore": "BERTScore",
-}
-
-_METRIC_DESCRIPTIONS: dict[str, dict] = {
-    "BLEU": {
-        "short": "N-gram word overlap vs. reference. Higher = closer word-for-word match.",
-        "range": "0 – 1",
-        "good": "> 0.30 for translation",
-        "detail": (
-            "Counts how many short word sequences (n-grams) appear in both the model output "
-            "and the human reference. Fast to compute and widely used, but does not capture "
-            "paraphrases — a perfect synonym scores zero."
-        ),
-    },
-    "ROUGE-L": {
-        "short": "Longest common subsequence vs. reference. Captures sentence structure.",
-        "range": "0 – 1",
-        "good": "> 0.25 for news summarisation",
-        "detail": (
-            "Finds the longest sequence of words that appear in both texts (in order, not "
-            "necessarily contiguous). Rewards outputs that preserve the flow and structure of "
-            "the reference. The standard metric for news summarisation benchmarks."
-        ),
-    },
-    "BERTScore": {
-        "short": "Semantic similarity via BERT embeddings. Robust to paraphrasing.",
-        "range": "0 – 1",
-        "good": "> 0.70 (F1, DeBERTa model)",
-        "detail": (
-            "Embeds each token with a pre-trained BERT model and computes cosine similarity "
-            "between output and reference. A paraphrase that conveys the same meaning "
-            "scores highly even if no words overlap. Most correlated with human judgment."
-        ),
-    },
-}
-
 _TASK_META: dict[str, dict] = {
     "translation": {
         "label": "Translation (DE → EN)",
@@ -78,7 +46,6 @@ _TASK_META: dict[str, dict] = {
         ),
         "dataset": "EuroParl (EU Parliament proceedings)",
         "dataset_key": "europarl",
-        "metrics": ["BLEU", "BERTScore"],
         "preview_field": "raw_text",
         "preview_label": "Source (German)",
         "preview_ref_field": "reference_translation",
@@ -92,7 +59,6 @@ _TASK_META: dict[str, dict] = {
         ),
         "dataset": "CNN / DailyMail (news articles)",
         "dataset_key": "cnn_dailymail",
-        "metrics": ["ROUGE-L", "BERTScore"],
         "preview_field": "raw_text",
         "preview_label": "Article",
         "preview_ref_field": "reference_summary",
@@ -241,7 +207,7 @@ def _top_metric_scores(report: BenchmarkReport) -> dict[str, float]:
     scores: dict[str, float] = {}
     for result in report.results:
         for metric, value in result.quality_metrics.items():
-            label = _METRIC_DISPLAY.get(metric, metric.upper())
+            label = display_name(metric)
             scores[label] = max(scores.get(label, float("-inf")), value)
     return scores
 
@@ -474,6 +440,7 @@ def _render_pre_run(
 ) -> None:
     meta = _TASK_META.get(task, {})
     catalog = get_model_catalog(config)
+    task_metrics = get_task_metric_display_names(config, task)
 
     # Task context card
     with st.container(border=True):
@@ -481,15 +448,15 @@ def _render_pre_run(
         cols[0].markdown(f"### {meta.get('label', task.title())}")
         cols[0].markdown(meta.get("description", ""))
         cols[1].metric("Dataset", meta.get("dataset", "—"))
-        cols[2].metric("Metrics", "  ·  ".join(meta.get("metrics", [])))
+        cols[2].metric("Metrics", "  ·  ".join(task_metrics) if task_metrics else "—")
 
     st.divider()
 
-    # Metric explainer cards — one per metric, side by side
+    # Metric explainer cards — one per configured metric, side by side
     st.markdown("#### What will be measured")
-    metric_cols = st.columns(len(meta.get("metrics", [])))
-    for i, metric_name in enumerate(meta.get("metrics", [])):
-        info = _METRIC_DESCRIPTIONS.get(metric_name, {})
+    metric_cols = st.columns(max(len(task_metrics), 1))
+    for i, metric_name in enumerate(task_metrics):
+        info = metric_info_for_display(metric_name)
         with metric_cols[i]:
             with st.container(border=True):
                 st.markdown(f"**{metric_name}**")
@@ -497,8 +464,10 @@ def _render_pre_run(
                 st.markdown(
                     f"Range: `{info.get('range', '—')}`  ·  Good score: `{info.get('good', '—')}`"
                 )
-                with st.expander("How it works"):
-                    st.markdown(info.get("detail", ""))
+                detail = info.get("detail", "")
+                if detail:
+                    with st.expander("How it works"):
+                        st.markdown(detail)
 
     st.divider()
 
@@ -647,11 +616,12 @@ def _run_with_progress(
     task: str,
     model_keys: list[str],
     documents: list[DocumentInput],
+    config: dict,
 ) -> BenchmarkReport:
     """Run each model and surface real-time per-model progress in the UI."""
     n = len(model_keys)
     n_docs = len(documents)
-    metric_names = " · ".join(_TASK_META.get(task, {}).get("metrics", ["metrics"]))
+    metric_names = " · ".join(get_task_metric_display_names(config, task) or ["metrics"])
 
     accumulated: list[ModelBenchmarkResult] = []
     progress = st.progress(0.0, text="Starting benchmark…")
@@ -703,7 +673,7 @@ def _to_dataframe(report: BenchmarkReport) -> pd.DataFrame:
     for r in report.results:
         row: dict = {"Model": r.model_key}
         for key, value in r.quality_metrics.items():
-            row[_METRIC_DISPLAY.get(key, key.upper())] = round(value, 4)
+            row[display_name(key)] = round(value, 4)
         cost_per_doc = round(r.total_cost_usd / r.n_docs, 8) if r.n_docs else 0.0
         row.update({
             "Avg In Tokens": round(r.avg_input_tokens),
@@ -717,21 +687,8 @@ def _to_dataframe(report: BenchmarkReport) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _quality_context(metric: str, score: float) -> str:
-    """Map a metric score to a human-readable verdict."""
-    thresholds: dict[str, list[tuple[float, str]]] = {
-        "BLEU":      [(0.40, "excellent"), (0.30, "good"), (0.15, "moderate"), (0.0, "low")],
-        "ROUGE-L":   [(0.45, "excellent"), (0.30, "good"), (0.15, "moderate"), (0.0, "low")],
-        "BERTScore": [(0.80, "excellent"), (0.70, "good"), (0.60, "moderate"), (0.0, "low")],
-    }
-    for threshold, label in thresholds.get(metric, []):
-        if score >= threshold:
-            return label
-    return "—"
-
-
 def _render_insights(df: pd.DataFrame) -> None:
-    quality_cols = [c for c in df.columns if c in _METRIC_DESCRIPTIONS]
+    quality_cols = quality_columns_in_dataframe(df)
     if not quality_cols or df.empty:
         return
 
@@ -740,7 +697,7 @@ def _render_insights(df: pd.DataFrame) -> None:
     for col in quality_cols:
         best = df.loc[df[col].idxmax()]
         spread = df[col].max() - df[col].min()
-        verdict = _quality_context(col, best[col])
+        verdict = quality_context(col, best[col])
         lines.append(
             f"**{col}** — Best: **{best['Model']}** ({best[col]:.4f} — *{verdict}*)"
             + (f"  ·  Spread across models: {spread:.4f}" if len(df) > 1 else "")
@@ -782,7 +739,7 @@ def _render_insights(df: pd.DataFrame) -> None:
             st.markdown(f"- {line}")
         with st.expander("What do these scores mean?"):
             for col in quality_cols:
-                info = _METRIC_DESCRIPTIONS.get(col, {})
+                info = metric_info_for_display(col)
                 st.markdown(
                     f"**{col}** (`{info.get('range', '—')}`) — "
                     f"{info.get('short', '')}  Good: `{info.get('good', '—')}`."
@@ -790,7 +747,7 @@ def _render_insights(df: pd.DataFrame) -> None:
 
 
 def _render_metric_bars(df: pd.DataFrame, colors: dict[str, str]) -> None:
-    quality_cols = [c for c in df.columns if c in _METRIC_DESCRIPTIONS]
+    quality_cols = quality_columns_in_dataframe(df)
     if not quality_cols:
         return
 
@@ -828,17 +785,18 @@ def _render_metric_bars(df: pd.DataFrame, colors: dict[str, str]) -> None:
         )
 
 
-def _render_cost_scatter(df: pd.DataFrame, colors: dict[str, str]) -> None:
-    if "BERTScore" not in df.columns or df.empty:
+def _render_cost_scatter(df: pd.DataFrame, colors: dict[str, str], config: dict, task: str) -> None:
+    scatter_metric = primary_scatter_metric(config, task, df)
+    if not scatter_metric or df.empty:
         return
 
     st.subheader("Cost vs. Quality")
     st.caption(
-        "Ideal model: **top-left** — highest semantic quality at lowest cost. "
+        f"Ideal model: **top-left** — highest {scatter_metric} at lowest cost. "
         "Point size encodes avg latency (larger = slower). Hover for details."
     )
 
-    chart_df = df[["Model", "Cost/Doc ($)", "BERTScore", "Avg Latency (ms)"]].copy()
+    chart_df = df[["Model", "Cost/Doc ($)", scatter_metric, "Avg Latency (ms)"]].copy()
     color_scale = alt.Scale(domain=list(colors.keys()), range=list(colors.values()))
 
     scatter = (
@@ -852,8 +810,8 @@ def _render_cost_scatter(df: pd.DataFrame, colors: dict[str, str]) -> None:
                 scale=alt.Scale(padding=0.4),
             ),
             y=alt.Y(
-                "BERTScore:Q",
-                title="BERTScore (semantic quality)",
+                f"{scatter_metric}:Q",
+                title=f"{scatter_metric} (quality)",
                 scale=alt.Scale(domain=[0, 1]),
             ),
             color=alt.Color("Model:N", scale=color_scale),
@@ -864,7 +822,7 @@ def _render_cost_scatter(df: pd.DataFrame, colors: dict[str, str]) -> None:
             ),
             tooltip=[
                 "Model:N",
-                alt.Tooltip("BERTScore:Q", format=".4f"),
+                alt.Tooltip(f"{scatter_metric}:Q", format=".4f"),
                 alt.Tooltip("Cost/Doc ($):Q", format=".6f"),
                 alt.Tooltip("Avg Latency (ms):Q", format=".0f"),
             ],
@@ -876,7 +834,7 @@ def _render_cost_scatter(df: pd.DataFrame, colors: dict[str, str]) -> None:
         .mark_text(dy=-16, fontSize=12, fontWeight="bold")
         .encode(
             x="Cost/Doc ($):Q",
-            y="BERTScore:Q",
+            y=f"{scatter_metric}:Q",
             text="Model:N",
             color=alt.Color("Model:N", scale=color_scale, legend=None),
         )
@@ -956,7 +914,7 @@ def main() -> None:
         else:
             doc_inputs = [DocumentInput(**d) for d in selected_docs]
             runner = BenchmarkRunner(config=config, prompts=prompts)
-            report = _run_with_progress(runner, task, model_keys, doc_inputs)
+            report = _run_with_progress(runner, task, model_keys, doc_inputs, config)
             st.session_state.setdefault("_run_cache", {})[cache_key] = report
             st.session_state["report"] = report
             st.session_state["report_task"] = task
@@ -1031,7 +989,7 @@ def main() -> None:
     _render_metric_bars(df, colors)
 
     st.divider()
-    _render_cost_scatter(df, colors)
+    _render_cost_scatter(df, colors, config, task)
 
     st.divider()
     _render_export(report, df)
