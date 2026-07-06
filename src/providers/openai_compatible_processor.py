@@ -29,7 +29,7 @@ class OpenAICompatibleProcessor(BaseDocumentProcessor):
         start = time.time()
         system, user = self._build_prompt_parts(
             step="extraction",
-            variables={"text": self._truncate(document.raw_text)},
+            variables={"text": document.raw_text},
         )
         raw_output, token_usage = self._call_api(system, user)
         parsed = self._parse_json(raw_output, step="extraction")
@@ -67,7 +67,7 @@ class OpenAICompatibleProcessor(BaseDocumentProcessor):
         system, user = self._build_prompt_parts(
             step="translation",
             variables={
-                "text": self._truncate(document.raw_text),
+                "text": document.raw_text,
                 "source_language": document.source_language,
             },
         )
@@ -91,7 +91,7 @@ class OpenAICompatibleProcessor(BaseDocumentProcessor):
         start = time.time()
         system, user = self._build_prompt_parts(
             step="summarisation",
-            variables={"text": self._truncate(document.raw_text)},
+            variables={"text": document.raw_text},
         )
         raw_output, token_usage = self._call_api(system, user)
         parsed = self._parse_json(raw_output, step="summarisation")
@@ -157,8 +157,3 @@ class OpenAICompatibleProcessor(BaseDocumentProcessor):
             logger.warning(f"[{step}] Failed to parse JSON: {e}. Raw output: {raw[:200]}")
             return {}
 
-    def _truncate(self, text: str) -> str:
-        max_len = self.config.get("max_document_length", 2000)
-        if len(text) > max_len:
-            logger.warning(f"Document truncated from {len(text)} to {max_len} chars.")
-        return text[:max_len]

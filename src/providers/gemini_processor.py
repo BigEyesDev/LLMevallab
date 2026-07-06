@@ -41,7 +41,7 @@ class GeminiProcessor(BaseDocumentProcessor):
 
         prompt = self._build_prompt(
             step="extraction",
-            variables={"text": self._truncate(document.raw_text)},
+            variables={"text": document.raw_text},
         )
         raw_output, token_usage = self._call_api(prompt)
         parsed = self._parse_json(raw_output, step="extraction")
@@ -79,7 +79,7 @@ class GeminiProcessor(BaseDocumentProcessor):
         prompt = self._build_prompt(
             step="translation",
             variables={
-                "text": self._truncate(document.raw_text),
+                "text": document.raw_text,
                 "source_language": document.source_language,
             },
         )
@@ -104,7 +104,7 @@ class GeminiProcessor(BaseDocumentProcessor):
 
         prompt = self._build_prompt(
             step="summarisation",
-            variables={"text": self._truncate(document.raw_text)},
+            variables={"text": document.raw_text},
         )
         raw_output, token_usage = self._call_api(prompt)
         parsed = self._parse_json(raw_output, step="summarisation")
@@ -164,8 +164,3 @@ class GeminiProcessor(BaseDocumentProcessor):
             logger.warning(f"[{step}] Failed to parse JSON: {e}. Raw output: {raw[:200]}")
             return {}
 
-    def _truncate(self, text: str) -> str:
-        max_len = self.config.get("max_document_length", 2000)
-        if len(text) > max_len:
-            logger.warning(f"Document truncated from {len(text)} to {max_len} chars.")
-        return text[:max_len]
