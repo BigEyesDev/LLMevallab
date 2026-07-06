@@ -87,7 +87,7 @@ def test_benchmark_core_loop_one_result_per_model_and_same_docs(config_and_promp
     )
 
     class FakeOrchestrator:
-        def __init__(self, processor, config, task):
+        def __init__(self, processor, config, task, prompt_version=None):
             pass
 
         def run(self, documents):

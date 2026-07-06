@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — Prompt editor, run history, polish (Phase 3c)
+
+- **`src/pipeline/prompt_manager.py`** — load, version, and snapshot prompt templates; snapshots written to `configs/prompt_history/` on save.
+- **Dashboard prompt editor** — sidebar expander to view/edit system and user templates; **Save as new version** increments `configs/prompts.yaml` version.
+- **Session run history** — last 5 benchmark runs in sidebar; click to restore results.
+- **`PipelineResult.prompt_version`** and **`BenchmarkReport.prompt_version`** — trace every result to the prompt version used.
+- **`Makefile`** — `setup`, `run`, and `test` targets.
+- **`docs/MODELS.md`** — model catalog with smoke-test scores and known quirks.
+- **README overhaul** — one-command quickstart, model pricing table, architecture diagram, Makefile docs.
+- **`tests/test_prompt_manager.py`** and dashboard unit tests for run-history helpers.
+
 ## [0.3.1] - 2026-07-06
 
 ### Added — Dashboard re-run workflow
@@ -17,7 +28,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **Configure new run** now enables immediately when results exist — sidebar button renders after the run handler stores `report`, not before.
-- **ROUGE-L** appears in Key Takeaways for summarisation runs (`rouge_l` → `ROUGE-L` display mapping).
 
 ## [0.3.0] - 2026-07-06
 

@@ -17,6 +17,11 @@ from src.core.models import BenchmarkReport, DocumentInput, ModelBenchmarkResult
 from src.evaluations.benchmark import BenchmarkRunner
 from src.pipeline.benchmark_sample_loader import BenchmarkSampleLoader
 from src.pipeline.orchestrator import PipelineTask, load_prompts
+from src.pipeline.prompt_manager import (
+    get_prompt_version,
+    get_task_prompts,
+    save_prompt_version,
+)
 
 load_dotenv()
 
@@ -97,6 +102,7 @@ _TASK_META: dict[str, dict] = {
 
 _PALETTE = ["#4F8EF7", "#F7884F", "#4FF7A0", "#F74F92", "#B44FF7", "#F7D24F"]
 _RUNNABLE_TASKS = [PipelineTask.SUMMARISATION.value, PipelineTask.TRANSLATION.value]
+_MAX_RUN_HISTORY = 5
 
 # Rough characters-per-token estimates used for pre-run cost hints.
 # GPT-style tokenisers average ~4 chars/token for English.
@@ -230,6 +236,46 @@ def _selected_doc_ids(all_docs: list[dict]) -> list[str]:
     return [d["doc_id"] for d in _get_selected_docs(all_docs)]
 
 
+def _top_metric_scores(report: BenchmarkReport) -> dict[str, float]:
+    """Best score per quality metric across all models in a report."""
+    scores: dict[str, float] = {}
+    for result in report.results:
+        for metric, value in result.quality_metrics.items():
+            label = _METRIC_DISPLAY.get(metric, metric.upper())
+            scores[label] = max(scores.get(label, float("-inf")), value)
+    return scores
+
+
+def _make_history_entry(
+    report: BenchmarkReport,
+    model_keys: list[str],
+    prompt_version: str,
+) -> dict:
+    return {
+        "timestamp": report.run_timestamp,
+        "task": report.task,
+        "models": list(model_keys),
+        "doc_count": report.sample_size,
+        "prompt_version": prompt_version,
+        "top_scores": _top_metric_scores(report),
+        "report": report,
+    }
+
+
+def _append_run_history(entry: dict) -> None:
+    history = st.session_state.setdefault("_run_history", [])
+    history.insert(0, entry)
+    st.session_state["_run_history"] = history[:_MAX_RUN_HISTORY]
+
+
+def _history_button_label(entry: dict) -> str:
+    ts = entry["timestamp"][:16].replace("T", " ")
+    models = ", ".join(entry["models"][:2])
+    if len(entry["models"]) > 2:
+        models += f" +{len(entry['models']) - 2}"
+    return f"{ts} · {entry['task']} · {models}"
+
+
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
@@ -316,6 +362,74 @@ def _sidebar_data_source() -> str:
         )
         st.caption("API keys from `.env`.")
     return data_source
+
+
+def _sidebar_prompt_editor(task: str, prompts: dict) -> None:
+    """View and edit task prompts; save creates a versioned snapshot."""
+    version = get_prompt_version(prompts)
+    task_prompts = get_task_prompts(prompts, task)
+
+    with st.sidebar:
+        st.divider()
+        with st.expander(f"Prompts (v{version})", expanded=False):
+            st.caption(f"**{task}** templates from `configs/prompts.yaml`")
+            st.markdown("**System**")
+            st.code(task_prompts["system"], language=None)
+            st.markdown("**User template**")
+            st.code(task_prompts["user"], language=None)
+
+            st.markdown("**Edit**")
+            system = st.text_area(
+                "System prompt",
+                value=task_prompts["system"],
+                height=120,
+                key=f"_prompt_sys_{task}",
+            )
+            user = st.text_area(
+                "User template",
+                value=task_prompts["user"],
+                height=180,
+                key=f"_prompt_user_{task}",
+            )
+            note = st.text_input(
+                "Version note",
+                placeholder="e.g. shorter summary",
+                key="_prompt_note",
+            )
+            if st.button("Save as new version", key="_prompt_save", use_container_width=True):
+                new_version = save_prompt_version(task, system, user, note)
+                _load_resources.clear()
+                st.toast(f"Saved prompt v{new_version}", icon="💾")
+                st.rerun()
+
+
+def _sidebar_run_history() -> None:
+    """Collapsible list of the last five benchmark runs in this session."""
+    history: list[dict] = st.session_state.get("_run_history", [])
+    if not history:
+        return
+
+    with st.sidebar:
+        st.divider()
+        with st.expander("Recent runs", expanded=False):
+            st.caption("Click a run to restore its results in the main view.")
+            for i, entry in enumerate(history):
+                if st.button(
+                    _history_button_label(entry),
+                    key=f"_hist_{i}",
+                    use_container_width=True,
+                ):
+                    st.session_state["report"] = entry["report"]
+                    st.session_state["report_task"] = entry["task"]
+                    st.session_state["_from_cache"] = False
+                    st.rerun()
+                score_parts = [
+                    f"{metric} {value:.3f}" for metric, value in entry["top_scores"].items()
+                ]
+                st.caption(
+                    f"v{entry['prompt_version']} · {entry['doc_count']} docs"
+                    + (f" · {' · '.join(score_parts)}" if score_parts else "")
+                )
 
 
 def _sidebar_run_button(model_keys: list[str]) -> bool:
@@ -572,7 +686,12 @@ def _run_with_progress(
         progress.progress((i + 1) / n, text=f"Step {i + 1}/{n} — {model_key} complete")
 
     progress.progress(1.0, text=f"✅ {n} model{'s' if n > 1 else ''} evaluated on {n_docs} docs")
-    return BenchmarkReport(task=task, sample_size=n_docs, results=accumulated)
+    return BenchmarkReport(
+        task=task,
+        sample_size=n_docs,
+        results=accumulated,
+        prompt_version=get_prompt_version(runner.prompts),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -802,10 +921,11 @@ def main() -> None:
 
     config, prompts = _load_resources(*_resource_mtimes())
     task, model_keys, sample_size = _sidebar_settings(config)
+    data_source = _sidebar_data_source()
+    _sidebar_prompt_editor(task, prompts)
     run_clicked = _sidebar_run_button(model_keys)
 
     # Load documents for the selected data source
-    data_source = _sidebar_data_source()
     if data_source == _DATA_SOURCE_SAMPLES:
         all_docs = _load_benchmark_samples(task)
     else:
@@ -841,9 +961,18 @@ def main() -> None:
             st.session_state["report"] = report
             st.session_state["report_task"] = task
             st.session_state["_from_cache"] = False
+            _append_run_history(
+                _make_history_entry(
+                    report,
+                    model_keys,
+                    report.prompt_version or get_prompt_version(prompts),
+                )
+            )
 
     elif run_clicked and not selected_docs:
         st.warning("No documents selected — check at least one doc in the grid below.", icon="⚠️")
+
+    _sidebar_run_history()
 
     # Render after run handler so enabled state reflects results stored this pass.
     _sidebar_configure_button()
@@ -859,10 +988,14 @@ def main() -> None:
 
     from_cache = st.session_state.get("_from_cache", False)
     cache_badge = "  ·  💾 from cache" if from_cache else ""
+    prompt_badge = (
+        f"  ·  prompt v{report.prompt_version}" if report.prompt_version else ""
+    )
     selected_ids = _selected_doc_ids(all_docs)
 
     st.subheader(
-        f"Results — task: {report.task}  ·  {report.sample_size} docs{cache_badge}"
+        f"Results — task: {report.task}  ·  {report.sample_size} docs"
+        f"{prompt_badge}{cache_badge}"
     )
     with st.expander(
         f"Change document selection & re-run ({len(selected_ids)} docs selected)",

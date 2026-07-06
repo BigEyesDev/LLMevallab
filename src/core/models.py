@@ -105,6 +105,10 @@ class PipelineResult(AppModel):
         default=None,
         description="Truncation metadata — populated when a per-task length limit is applied",
     )
+    prompt_version: Optional[str] = Field(
+        default=None,
+        description="Prompt template version from configs/prompts.yaml at run time",
+    )
 
 
 class EvaluationScore(AppModel):
@@ -181,3 +185,7 @@ class BenchmarkReport(AppModel):
     run_timestamp: str = Field(default_factory=utc_now_iso)
     sample_size: int
     results: list[ModelBenchmarkResult] = Field(default_factory=list)
+    prompt_version: Optional[str] = Field(
+        default=None,
+        description="Prompt template version used for this benchmark run",
+    )

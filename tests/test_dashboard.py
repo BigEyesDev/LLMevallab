@@ -349,9 +349,80 @@ def test_run_with_progress_combines_results():
     documents = [_make_doc_input(f"d{i}") for i in range(3)]
 
     runner = MagicMock()
+    runner.prompts = {"version": 2}
     runner.run.side_effect = [_make_single_model_report(k, n_docs=3) for k in model_keys]
 
     report = _run_progress_patched(runner, "summarisation", model_keys, documents)
 
     assert len(report.results) == 3
     assert [r.model_key for r in report.results] == model_keys
+    assert report.prompt_version == "2"
+
+
+# ---------------------------------------------------------------------------
+# Unit: run history helpers
+# ---------------------------------------------------------------------------
+
+def test_top_metric_scores_picks_best_per_metric():
+    from app.dashboard import _top_metric_scores
+
+    report = BenchmarkReport(
+        task="summarisation",
+        sample_size=3,
+        results=[
+            ModelBenchmarkResult(
+                model_key="a",
+                model_id="org/a",
+                quality_metrics={"rouge": 0.3, "bertscore": 0.8},
+                n_docs=3,
+            ),
+            ModelBenchmarkResult(
+                model_key="b",
+                model_id="org/b",
+                quality_metrics={"rouge": 0.5, "bertscore": 0.7},
+                n_docs=3,
+            ),
+        ],
+    )
+    scores = _top_metric_scores(report)
+    assert scores["ROUGE-L"] == pytest.approx(0.5)
+    assert scores["BERTScore"] == pytest.approx(0.8)
+
+
+def test_make_history_entry_fields():
+    from app.dashboard import _make_history_entry
+
+    report = _make_report()
+    entry = _make_history_entry(report, ["m1", "m2"], "3")
+
+    assert entry["task"] == "summarisation"
+    assert entry["models"] == ["m1", "m2"]
+    assert entry["prompt_version"] == "3"
+    assert entry["report"] is report
+    assert "BERTScore" in entry["top_scores"]
+
+
+def test_append_run_history_keeps_max_five():
+    from app.dashboard import _append_run_history, _make_history_entry
+
+    fake_state: dict = {}
+    with patch("app.dashboard.st.session_state", fake_state):
+        for i in range(7):
+            report = BenchmarkReport(task="translation", sample_size=1, results=[])
+            _append_run_history(_make_history_entry(report, [f"m{i}"], "1"))
+
+    assert len(fake_state["_run_history"]) == 5
+    assert fake_state["_run_history"][0]["models"] == ["m6"]
+
+
+def test_history_button_label_truncates_models():
+    from app.dashboard import _history_button_label
+
+    entry = {
+        "timestamp": "2026-07-06T10:00:00+00:00",
+        "task": "translation",
+        "models": ["a", "b", "c", "d"],
+    }
+    label = _history_button_label(entry)
+    assert "translation" in label
+    assert "+2" in label

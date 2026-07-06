@@ -25,6 +25,7 @@ from src.evaluations.evaluator import Evaluator, resolve_ground_truth_path
 from src.pipeline.cnn_dailymail_loader import CNNDailyMailLoader
 from src.pipeline.europarl_loader import EuroParlDataLoader
 from src.pipeline.orchestrator import PipelineOrchestrator, PipelineTask, build_processor, load_prompts
+from src.pipeline.prompt_manager import get_prompt_version
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +202,7 @@ class BenchmarkRunner:
         ground_truth_path = resolve_ground_truth_path(task, self.config)
         catalog = get_model_catalog(self.config)
         evaluator = Evaluator(self.config)
+        prompt_version = get_prompt_version(self.prompts)
 
         model_results: list[ModelBenchmarkResult] = []
         for model_key in model_keys:
@@ -210,6 +212,7 @@ class BenchmarkRunner:
                 processor=processor,
                 config=self.config,
                 task=task,
+                prompt_version=prompt_version,
             )
             pipeline_results = orchestrator.run(documents)
             evaluation_report = evaluator.run_on_results(
@@ -231,6 +234,7 @@ class BenchmarkRunner:
             task=task.value,
             sample_size=len(documents),  # reflects actual docs, not the sample_size arg
             results=model_results,
+            prompt_version=prompt_version,
         )
 
 

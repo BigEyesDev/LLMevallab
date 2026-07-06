@@ -64,8 +64,10 @@ class PipelineTask(str, Enum):
 # ─────────────────────────────────────────────────────
 
 def load_prompts(prompts_path: str = "configs/prompts.yaml") -> dict:
-    with open(prompts_path, "r") as f:
-        return yaml.safe_load(f)
+    """Load prompt templates from YAML (delegates to prompt_manager)."""
+    from src.pipeline.prompt_manager import load_prompts as _load
+
+    return _load(prompts_path)
 
 
 def _dataset_sample_size(config: dict, dataset_key: str) -> int:
@@ -135,6 +137,7 @@ class PipelineOrchestrator:
         model_key: str | None = None,
         dataset_path: str | None = None,
         ground_truth_path: str | None = None,
+        prompt_version: str | None = None,
     ):
         """
         Args:
@@ -157,6 +160,7 @@ class PipelineOrchestrator:
         self.model_key = model_key
         self.dataset_path = dataset_path
         self.ground_truth_path = ground_truth_path or dataset_path
+        self.prompt_version = prompt_version
         self.output_dir = Path(config["paths"]["outputs"])
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -297,6 +301,7 @@ class PipelineOrchestrator:
             summary=summary,
             total_processing_time_ms=(time.time() - start) * 1000,
             truncation=trunc_info,
+            prompt_version=self.prompt_version,
         )
 
     def _save_results(self, results: list[PipelineResult]) -> Path:
@@ -478,6 +483,8 @@ if __name__ == "__main__":
 
     config = load_config()
     prompts = load_prompts()
+    from src.pipeline.prompt_manager import get_prompt_version
+
     model_key = args.model or config["models"]["default"]
 
     processor = build_processor(model_key, config, prompts)
@@ -518,6 +525,7 @@ if __name__ == "__main__":
         model_key=model_key,
         dataset_path=input_path,
         ground_truth_path=input_path,  # same file for our current datasets
+        prompt_version=get_prompt_version(prompts),
     )
     results = orchestrator.run(documents)
 
