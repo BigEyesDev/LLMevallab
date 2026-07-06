@@ -7,7 +7,7 @@ packages = ["src"]
 
 [project]
 name = "llmevallab"
-version = "0.3.0"
+version = "0.3.1"
 description = "Model-agnostic LLM document evaluation and benchmarking"
 readme = "README.md"
 requires-python = ">=3.12"

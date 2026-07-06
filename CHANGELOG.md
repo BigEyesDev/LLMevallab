@@ -7,6 +7,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-06
+
+### Added — Dashboard re-run workflow
+
+- **Configure new run** sidebar button (green) — returns to the full setup view after a benchmark without losing checkbox selections.
+- **Change document selection & re-run** expander on the results page — pick different docs and click **Run Benchmark** again without leaving results.
+
+### Fixed
+
+- **Configure new run** now enables immediately when results exist — sidebar button renders after the run handler stores `report`, not before.
+- **ROUGE-L** appears in Key Takeaways for summarisation runs (`rouge_l` → `ROUGE-L` display mapping).
+
 ## [0.3.0] - 2026-07-06
 
 ### Added — Local Streamlit dashboard + offline benchmark samples (Phase 3a/3b)
