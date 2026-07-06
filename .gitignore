@@ -15,6 +15,9 @@ outputs/results/
 # Personal learning logs (local only — not for public repo)
 docs/learning/
 
+# Personal planning / article drafts (local only)
+files/SUBSTACK_ARTICLE_BRIEF.md
+
 # Jupyter checkpoints
 .ipynb_checkpoints/
 
