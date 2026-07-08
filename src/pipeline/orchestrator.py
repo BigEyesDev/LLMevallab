@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 
 from src.core.base_processor import BaseDocumentProcessor
+from src.core.concurrency import ProviderLimiter, run_in_parallel
+from src.core.config import get_concurrency_settings, get_model_catalog, get_processed_path, load_config, validate_model_key
 from src.core.time import utc_timestamp, utc_now_iso
 from src.core.models import (
     DocumentInput,
@@ -22,7 +24,6 @@ from src.core.models import (
     TASK_GROUND_TRUTH_KEY,
     DEFAULT_TASK_TRUNCATION_LIMITS,
 )
-from src.core.config import get_model_catalog, get_processed_path, load_config, validate_model_key
 from src.core.provenance import dataset_hash, ground_truth_hash, config_hash, config_snapshot
 from src.providers.gemini_processor import GeminiProcessor
 from src.providers.claude_processor import ClaudeProcessor
@@ -138,6 +139,8 @@ class PipelineOrchestrator:
         dataset_path: str | None = None,
         ground_truth_path: str | None = None,
         prompt_version: str | None = None,
+        provider_limiter: ProviderLimiter | None = None,
+        skip_extraction: bool | None = None,
     ):
         """
         Args:
@@ -161,6 +164,14 @@ class PipelineOrchestrator:
         self.dataset_path = dataset_path
         self.ground_truth_path = ground_truth_path or dataset_path
         self.prompt_version = prompt_version
+        self.provider_limiter = provider_limiter
+        self._provider_type = processor.config.get("provider_type", "")
+        concurrency = get_concurrency_settings(config)
+        self.skip_extraction = (
+            skip_extraction
+            if skip_extraction is not None
+            else concurrency.skip_extraction
+        )
         self.output_dir = Path(config["paths"]["outputs"])
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -178,16 +189,25 @@ class PipelineOrchestrator:
         """
         results: list[PipelineResult] = []
         target_lang = self.config["pipeline"]["target_language"]
+        max_docs = get_concurrency_settings(self.config).max_concurrent_documents
 
         logger.info(
             f"Starting [{self.task.value}] pipeline | "
             f"model: {self.processor.model_name} | "
-            f"documents: {len(documents)}"
+            f"documents: {len(documents)} | "
+            f"max_concurrent_documents: {max_docs}"
         )
 
-        for doc in tqdm(documents, desc=f"[{self.task.value}] {self.processor.model_name}"):
-            result = self._process_single(doc, target_lang)
-            results.append(result)
+        if max_docs == 1:
+            results = []
+            for doc in tqdm(documents, desc=f"[{self.task.value}] {self.processor.model_name}"):
+                results.append(self._process_single(doc, target_lang))
+        else:
+            results = run_in_parallel(
+                documents,
+                lambda doc: self._process_single(doc, target_lang),
+                max_workers=max_docs,
+            )
 
         output_path = self._save_results(results)
         logger.info(f"Pipeline complete. Results → {output_path}")
@@ -259,27 +279,33 @@ class PipelineOrchestrator:
         limit = self._get_task_truncation_limit()
         truncated_doc, trunc_info = self._truncate_document(document, limit)
 
-        # ── Step 1: Extract (runs for all tasks) ──────────────────────
-        try:
-            extraction = self.processor.extract(truncated_doc)
-        except Exception as e:
-            logger.error(f"[{document.doc_id}] Extraction failed: {e}")
+        skip_extract = (
+            self.skip_extraction
+            and self.task == PipelineTask.SUMMARISATION
+        )
+        if skip_extract:
+            logger.info(f"[{document.doc_id}] skip_extraction enabled — skipping extract step")
 
-        # ── Step 2: Translate (TRANSLATION and FULL tasks only) ────────
+        if not skip_extract:
+            try:
+                extraction = self._call_with_limiter(
+                    lambda: self.processor.extract(truncated_doc)
+                )
+            except Exception as e:
+                logger.error(f"[{document.doc_id}] Extraction failed: {e}")
+
         if self.task in (PipelineTask.TRANSLATION, PipelineTask.FULL):
             try:
-                translation = self.processor.translate(
-                    truncated_doc, target_language=target_language
+                translation = self._call_with_limiter(
+                    lambda: self.processor.translate(
+                        truncated_doc, target_language=target_language
+                    )
                 )
             except Exception as e:
                 logger.error(f"[{document.doc_id}] Translation failed: {e}")
 
-        # ── Step 3: Summarise (SUMMARISATION and FULL tasks only) ──────
         if self.task in (PipelineTask.SUMMARISATION, PipelineTask.FULL):
             try:
-                # For FULL task: summarise the translated text if available
-                # For SUMMARISATION task: document is already in target language
-                # (e.g. CNN/DailyMail is English) — summarise raw text directly
                 if self.task == PipelineTask.FULL and translation:
                     summary_input = truncated_doc.model_copy(
                         update={
@@ -290,7 +316,9 @@ class PipelineOrchestrator:
                 else:
                     summary_input = truncated_doc
 
-                summary = self.processor.summarise(summary_input)
+                summary = self._call_with_limiter(
+                    lambda: self.processor.summarise(summary_input)
+                )
             except Exception as e:
                 logger.error(f"[{document.doc_id}] Summarisation failed: {e}")
 
@@ -303,6 +331,14 @@ class PipelineOrchestrator:
             truncation=trunc_info,
             prompt_version=self.prompt_version,
         )
+
+    def _call_with_limiter(self, fn):
+        """Acquire provider semaphore before a sync API call."""
+        if self.provider_limiter is None or not self._provider_type:
+            return fn()
+        sem = self.provider_limiter.acquire(self._provider_type)
+        with sem:
+            return fn()
 
     def _save_results(self, results: list[PipelineResult]) -> Path:
         """
@@ -472,6 +508,17 @@ if __name__ == "__main__":
         help="Number of documents to process (default: 5)",
     )
     parser.add_argument(
+        "--skip-extract",
+        action="store_true",
+        help="Skip extraction step for summarisation (halves API calls)",
+    )
+    parser.add_argument(
+        "--max-concurrent-documents",
+        type=int,
+        default=None,
+        help="Override pipeline.max_concurrent_documents from config",
+    )
+    parser.add_argument(
         "--evaluate",
         action="store_true",
         help=(
@@ -482,6 +529,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     config = load_config()
+    if args.max_concurrent_documents is not None:
+        config.setdefault("pipeline", {})["max_concurrent_documents"] = args.max_concurrent_documents
     prompts = load_prompts()
     from src.pipeline.prompt_manager import get_prompt_version
 
@@ -524,8 +573,12 @@ if __name__ == "__main__":
         task=task,
         model_key=model_key,
         dataset_path=input_path,
-        ground_truth_path=input_path,  # same file for our current datasets
+        ground_truth_path=input_path,
         prompt_version=get_prompt_version(prompts),
+        provider_limiter=ProviderLimiter(
+            get_concurrency_settings(config).effective_provider_limits()
+        ),
+        skip_extraction=args.skip_extract or None,
     )
     results = orchestrator.run(documents)
 
