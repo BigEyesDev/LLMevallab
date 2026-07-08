@@ -1,7 +1,9 @@
 pipeline:
   target_language: "en"
   max_document_length: 30000      # chars — safety-net fallback only; per-task limits below take precedence
-  batch_size: 5                   # documents per run
+  batch_size: 5                   # deprecated — use max_concurrent_documents
+  max_concurrent_documents: 5
+  skip_extraction: false          # summarisation only; ignored for translation
   save_raw_llm_output: true       # useful for debugging
 
   # Per-task hard caps (chars) — act as a safety net for unexpectedly large documents only.
@@ -13,6 +15,9 @@ pipeline:
     translation: 15000
     summarisation: 30000
     full: 15000
+
+benchmark:
+  max_concurrent_models: 3
 
 models:
   default: "gemini-2.5-flash"
@@ -163,6 +168,11 @@ datasets:
     ground_truth_key: "reference_summary"
 
 evaluation:
+  max_concurrent_judge_calls: 5
+  provider_limits:
+    gemini: 10
+    claude: 5
+    openai_compatible: 8
   metrics:
     translation:
       - bleu
