@@ -6,13 +6,15 @@ import argparse
 import json
 import logging
 import statistics
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
-import yaml
 
 from src import __version__
-from src.core.config import get_model_catalog, get_processed_path, load_config, validate_model_key
+from src.core.concurrency import ProviderLimiter, run_in_parallel
+from src.core.config import get_concurrency_settings, get_model_catalog, get_processed_path, load_config, validate_model_key
 from src.core.time import utc_timestamp
 from src.core.models import (
     BenchmarkReport,
@@ -184,57 +186,104 @@ class BenchmarkRunner:
         model_keys: list[str],
         sample_size: int,
         documents: list[DocumentInput] | None = None,
+        *,
+        on_complete: Callable[[str, float], None] | None = None,
+        skip_extraction: bool | None = None,
     ) -> BenchmarkReport:
-        """Benchmark each model on an identical document slice.
-
-        If ``documents`` is provided those docs are used directly and
-        ``sample_size`` is ignored for loading. ``BenchmarkReport.sample_size``
-        always reflects the actual number of docs evaluated.
-        """
+        """Benchmark each model on an identical document slice."""
         if isinstance(task, str):
             task = PipelineTask(task)
 
         for model_key in model_keys:
             validate_model_key(model_key, self.config)
 
+        # REGISTRY_HOOK: register_or_get(task, doc_ids) → document_set_name, selection_hash
+        # REGISTRY_HOOK: run_fingerprint(...) → check cache before API calls
+
         if documents is None:
             documents = load_documents_for_task(task, self.config, sample_size)
-        ground_truth_path = resolve_ground_truth_path(task, self.config)
-        catalog = get_model_catalog(self.config)
-        evaluator = Evaluator(self.config)
+
+        concurrency = get_concurrency_settings(self.config)
+        max_models = concurrency.max_concurrent_models
+        provider_limiter = ProviderLimiter(concurrency.effective_provider_limits())
         prompt_version = get_prompt_version(self.prompts)
 
-        model_results: list[ModelBenchmarkResult] = []
-        for model_key in model_keys:
-            logger.info("Benchmarking model: %s", model_key)
-            processor = build_processor(model_key, self.config, self.prompts)
-            orchestrator = PipelineOrchestrator(
-                processor=processor,
-                config=self.config,
-                task=task,
-                prompt_version=prompt_version,
-            )
-            pipeline_results = orchestrator.run(documents)
-            evaluation_report = evaluator.run_on_results(
-                pipeline_results=pipeline_results,
-                ground_truth_path=ground_truth_path,
-                task=task,
-                persist_report=False,
-            )
-            model_results.append(
-                aggregate_pipeline_results(
-                    model_key=model_key,
-                    model_id=catalog[model_key]["model_id"],
-                    pipeline_results=pipeline_results,
-                    evaluation_report=evaluation_report,
+        if max_models == 1:
+            model_results = []
+            for model_key in model_keys:
+                t0 = time.perf_counter()
+                model_results.append(
+                    self._benchmark_single_model(
+                        model_key,
+                        task,
+                        documents,
+                        provider_limiter=provider_limiter,
+                        skip_extraction=skip_extraction,
+                    )
                 )
-            )
+                if on_complete:
+                    on_complete(model_key, time.perf_counter() - t0)
+        else:
+            def _worker(model_key: str) -> ModelBenchmarkResult:
+                t0 = time.perf_counter()
+                result = self._benchmark_single_model(
+                    model_key,
+                    task,
+                    documents,
+                    provider_limiter=provider_limiter,
+                    skip_extraction=skip_extraction,
+                )
+                if on_complete:
+                    on_complete(model_key, time.perf_counter() - t0)
+                return result
+
+            model_results = run_in_parallel(model_keys, _worker, max_workers=max_models)
 
         return BenchmarkReport(
             task=task.value,
-            sample_size=len(documents),  # reflects actual docs, not the sample_size arg
+            sample_size=len(documents),
             results=model_results,
             prompt_version=prompt_version,
+        )
+
+    def _benchmark_single_model(
+        self,
+        model_key: str,
+        task: PipelineTask,
+        documents: list[DocumentInput],
+        *,
+        provider_limiter: ProviderLimiter | None = None,
+        skip_extraction: bool | None = None,
+    ) -> ModelBenchmarkResult:
+        """Run pipeline + evaluation for one catalog model."""
+        catalog = get_model_catalog(self.config)
+        ground_truth_path = resolve_ground_truth_path(task, self.config)
+        prompt_version = get_prompt_version(self.prompts)
+
+        logger.info("Benchmarking model: %s", model_key)
+        processor = build_processor(model_key, self.config, self.prompts)
+        orchestrator = PipelineOrchestrator(
+            processor=processor,
+            config=self.config,
+            task=task,
+            model_key=model_key,
+            ground_truth_path=ground_truth_path,
+            prompt_version=prompt_version,
+            provider_limiter=provider_limiter,
+            skip_extraction=skip_extraction,
+        )
+        pipeline_results = orchestrator.run(documents)
+        evaluation_report = Evaluator(self.config).run_on_results(
+            pipeline_results=pipeline_results,
+            ground_truth_path=ground_truth_path,
+            task=task,
+            persist_report=False,
+        )
+        return aggregate_pipeline_results(
+            model_key=model_key,
+            model_id=catalog[model_key]["model_id"],
+            pipeline_results=pipeline_results,
+            evaluation_report=evaluation_report,
         )
 
 
@@ -265,9 +314,31 @@ def main(argv: list[str] | None = None) -> BenchmarkReport:
         default="configs/config.yaml",
         help="Path to config.yaml",
     )
+    parser.add_argument(
+        "--max-concurrent-models",
+        type=int,
+        default=None,
+        help="Override benchmark.max_concurrent_models from config",
+    )
+    parser.add_argument(
+        "--max-concurrent-documents",
+        type=int,
+        default=None,
+        help="Override pipeline.max_concurrent_documents from config",
+    )
+    parser.add_argument(
+        "--skip-extract",
+        action="store_true",
+        help="Skip extraction step for summarisation (halves API calls)",
+    )
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
+    if args.max_concurrent_models is not None:
+        config.setdefault("benchmark", {})["max_concurrent_models"] = args.max_concurrent_models
+    if args.max_concurrent_documents is not None:
+        config.setdefault("pipeline", {})["max_concurrent_documents"] = args.max_concurrent_documents
+
     prompts = load_prompts()
     model_keys = parse_models(args.models)
 
@@ -275,7 +346,12 @@ def main(argv: list[str] | None = None) -> BenchmarkReport:
         validate_model_key(model_key, config)
 
     runner = BenchmarkRunner(config=config, prompts=prompts)
-    report = runner.run(task=args.task, model_keys=model_keys, sample_size=args.sample)
+    report = runner.run(
+        task=args.task,
+        model_keys=model_keys,
+        sample_size=args.sample,
+        skip_extraction=args.skip_extract or None,
+    )
 
     save_benchmark_report(report, runner.reports_dir)
     print_benchmark_table(report)
