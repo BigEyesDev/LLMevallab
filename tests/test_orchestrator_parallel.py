@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.core.models import DocumentInput, ExtractionResult, SummaryResult
+from src.core.models import DocumentInput, ExtractionResult, SummaryResult, TranslationResult
 from src.pipeline.orchestrator import PipelineOrchestrator, PipelineTask
 
 
@@ -80,11 +80,19 @@ def test_skip_extraction_skips_extract_on_summarisation(base_config):
 
 def test_skip_extraction_ignored_for_translation(base_config):
     base_config["pipeline"]["skip_extraction"] = True
+    base_config["pipeline"]["max_concurrent_documents"] = 1
     proc = MagicMock()
     proc.model_name = "stub-model"
     proc.config = {"provider_type": "gemini"}
     proc.extract.return_value = ExtractionResult(doc_id="x", model_used="stub")
-    proc.translate.return_value = MagicMock(doc_id="d0", translated_text="T", model_used="stub")
+    proc.translate.return_value = TranslationResult(
+        doc_id="d0",
+        source_language="de",
+        target_language="en",
+        original_text="Text",
+        translated_text="Translated.",
+        model_used="stub",
+    )
 
     orch = PipelineOrchestrator(proc, base_config, task=PipelineTask.TRANSLATION, model_key="stub-model")
     orch.run([DocumentInput(doc_id="d0", source_language="de", raw_text="Text", metadata={})])

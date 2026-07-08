@@ -7,6 +7,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — Parallel benchmark orchestration
+
+- **`src/core/concurrency.py`** — `ConcurrencySettings`, `ProviderLimiter`, `run_in_parallel()` for bounded I/O parallelism.
+- **Two-level parallelism** — `BenchmarkRunner` pools models; `PipelineOrchestrator` pools documents; `LLMJudgeMetric` pools judge calls.
+- **Provider semaphores** — per-provider rate limits in `evaluation.provider_limits` (gemini, claude, openai_compatible).
+- **`skip_extraction`** — summarisation flag + `--skip-extract` CLI halves inference calls when extract is unused.
+- **Config knobs** — `max_concurrent_documents`, `max_concurrent_models`, `max_concurrent_judge_calls`.
+- **Dashboard** — single `BenchmarkRunner.run()` with `on_complete` progress; concurrency caption in sidebar.
+- **CLI overrides** — `--max-concurrent-models`, `--max-concurrent-documents`, `--skip-extract`.
+- **`tests/test_concurrency.py`**, **`tests/test_orchestrator_parallel.py`**; updated benchmark, metrics, dashboard tests.
+- **Learning doc** — `files/PARALLEL_ORCHESTRATION.md` (local); Article 5 stub in `files/SUBSTACK_ARTICLE_BRIEF.md` §6.
+
 ### Added — LLM-as-Judge summarisation metric
 
 - **`LLMJudgeMetric`** and **`JudgeClient`** — configurable judge model scores faithfulness, completeness, and coherence (1-5, normalized to 0-1) by comparing summaries against source documents.

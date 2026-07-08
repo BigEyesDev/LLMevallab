@@ -87,7 +87,7 @@ def test_benchmark_core_loop_one_result_per_model_and_same_docs(config_and_promp
     )
 
     class FakeOrchestrator:
-        def __init__(self, processor, config, task, prompt_version=None):
+        def __init__(self, processor, config, task, **kwargs):
             pass
 
         def run(self, documents):
@@ -99,7 +99,7 @@ def test_benchmark_core_loop_one_result_per_model_and_same_docs(config_and_promp
         return_value=[sample_document],
     ), patch(
         "src.evaluations.benchmark.build_processor",
-        return_value=MagicMock(model_name="fake-model"),
+        return_value=MagicMock(model_name="fake-model", config={"provider_type": "gemini"}),
     ), patch(
         "src.evaluations.benchmark.PipelineOrchestrator",
         FakeOrchestrator,
@@ -248,7 +248,6 @@ def test_benchmark_parallel_preserves_model_order(config_and_prompts, sample_doc
     config = {**config, "benchmark": {**config.get("benchmark", {}), "max_concurrent_models": 3}}
     runner = BenchmarkRunner(config=config, prompts=prompts)
     order_seen: list[str] = []
-    lock = __import__("threading").Lock()
 
     fake_pipeline = [
         PipelineResult(

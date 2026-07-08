@@ -85,6 +85,7 @@ flowchart TB
 
 | Path | Role |
 |---|---|
+| `src/core/concurrency.py` | Bounded parallelism — thread pools and provider semaphores |
 | `app/dashboard.py` | Streamlit UI — thin layer over the benchmark engine |
 | `src/evaluations/benchmark.py` | Multi-model `BenchmarkRunner` |
 | `src/pipeline/orchestrator.py` | Per-document extract, translate, summarise pipeline |
@@ -137,9 +138,17 @@ python main.py
 # Run pipeline on N docs
 python -m src.pipeline.orchestrator --task translation --model gemini-2.5-flash --dataset europarl --sample 5
 
-# Multi-model benchmark
-python -m src.evaluations.benchmark --task summarisation --models gemini-2.5-flash,deepseek-v3 --sample 5
+# Multi-model benchmark (parallel by default — tune in config.yaml)
+python -m src.evaluations.benchmark \
+  --task summarisation \
+  --models gemini-2.5-flash,deepseek-v4-flash \
+  --sample 15 \
+  --max-concurrent-models 3 \
+  --max-concurrent-documents 5 \
+  --skip-extract
 ```
+
+Parallel orchestration design (three options, tuning, CLI): see `files/PARALLEL_ORCHESTRATION.md` (local learning doc).
 
 See [RUNBOOK.md](RUNBOOK.md) for operational details.
 
