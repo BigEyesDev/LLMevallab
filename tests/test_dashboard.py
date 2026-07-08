@@ -359,6 +359,47 @@ def _run_progress_patched(runner, task, model_keys, documents, config=None):
         return _run_with_progress(runner, task, model_keys, documents, config)
 
 
+def test_run_with_progress_on_complete_attaches_streamlit_context():
+    """Parallel model workers must attach script ctx before Streamlit UI calls."""
+    from app.dashboard import _run_with_progress
+
+    model_keys = ["model-a", "model-b"]
+    documents = [_make_doc_input("d1")]
+    mock_progress = MagicMock()
+    mock_empty = MagicMock()
+    config = {"evaluation": {"metrics": {"summarisation": ["rouge"]}}}
+
+    captured_callback = {}
+
+    def fake_run(**kwargs):
+        captured_callback["fn"] = kwargs["on_complete"]
+        return BenchmarkReport(
+            task="summarisation",
+            sample_size=1,
+            results=[_make_single_model_report("model-a", n_docs=1).results[0]],
+            prompt_version="1",
+        )
+
+    runner = MagicMock()
+    runner.run.side_effect = fake_run
+    fake_ctx = object()
+
+    with (
+        patch("app.dashboard.st.progress", return_value=mock_progress),
+        patch("app.dashboard.st.empty", return_value=mock_empty),
+        patch("app.dashboard.get_script_run_ctx", return_value=fake_ctx),
+        patch("app.dashboard.add_script_run_ctx") as add_ctx,
+        patch("app.dashboard.time.perf_counter", return_value=0.0),
+    ):
+        _run_with_progress(runner, "summarisation", model_keys, documents, config)
+        on_complete = captured_callback["fn"]
+        on_complete("model-a", 1.5)
+
+    add_ctx.assert_called_once()
+    assert add_ctx.call_args[0][1] is fake_ctx
+    mock_empty.markdown.assert_called()
+
+
 def test_run_with_progress_calls_runner_once_with_all_models():
     model_keys = ["model-a", "model-b"]
     documents = [_make_doc_input("d1"), _make_doc_input("d2"), _make_doc_input("d3")]

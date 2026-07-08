@@ -49,30 +49,31 @@ def test_processed_path_updates_when_sample_size_changes():
 
 
 # ---------------------------------------------------------------------------
-# Phase 3b — catalog expansion
+# Catalog expansion — Jul 2026 OpenRouter tier
 # ---------------------------------------------------------------------------
 
-_EXPECTED_NEW_MODELS = [
-    "qwen3-30b",
-    "qwen2.5-72b",
-    "glm-4-7",         # thudm/glm-z1-32b removed from OpenRouter; replaced by z-ai/glm-4.7
-    "mistral-small-3.2",  # mistral-7b-instruct removed; replaced by mistral-small-3.2-24b
-    "phi-4",
-    "gemma-3-27b",
+_EXPECTED_OPENROUTER_MODELS = [
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "glm-5.2",
+    "minimax-m3",
+    "kimi-k2.6",
+    "nemotron-3-ultra",
+    "qwen3.7-plus",
 ]
 
 
 def test_new_models_present_in_catalog():
     config = load_config()
     catalog = config["models"]["catalog"]
-    for key in _EXPECTED_NEW_MODELS:
+    for key in _EXPECTED_OPENROUTER_MODELS:
         assert key in catalog, f"Expected model '{key}' missing from catalog"
 
 
 def test_new_models_use_openai_compatible_provider():
     config = load_config()
     catalog = config["models"]["catalog"]
-    for key in _EXPECTED_NEW_MODELS:
+    for key in _EXPECTED_OPENROUTER_MODELS:
         assert catalog[key]["provider_type"] == "openai_compatible", (
             f"Model '{key}' should use provider_type 'openai_compatible'"
         )
@@ -81,7 +82,7 @@ def test_new_models_use_openai_compatible_provider():
 def test_new_models_use_openrouter():
     config = load_config()
     catalog = config["models"]["catalog"]
-    for key in _EXPECTED_NEW_MODELS:
+    for key in _EXPECTED_OPENROUTER_MODELS:
         assert catalog[key].get("base_url") == "https://openrouter.ai/api/v1", (
             f"Model '{key}' should use OpenRouter base_url"
         )
@@ -90,17 +91,17 @@ def test_new_models_use_openrouter():
 def test_new_models_use_openrouter_api_key():
     config = load_config()
     catalog = config["models"]["catalog"]
-    for key in _EXPECTED_NEW_MODELS:
+    for key in _EXPECTED_OPENROUTER_MODELS:
         assert catalog[key]["api_key_env"] == "OPENROUTER_API_KEY", (
             f"Model '{key}' should use OPENROUTER_API_KEY"
         )
 
 
 def test_expanded_catalog_passes_full_validation():
-    """All 11 catalog entries (5 original + 6 new) must pass field validation."""
+    """All catalog entries (3 direct APIs + 7 OpenRouter) must pass field validation."""
     config = load_config()
     validate_model_catalog(config)
-    assert len(config["models"]["catalog"]) >= 11
+    assert len(config["models"]["catalog"]) == 10
 
 
 def test_all_catalog_pricing_is_nonzero():

@@ -17,7 +17,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Dashboard** — single `BenchmarkRunner.run()` with `on_complete` progress; concurrency caption in sidebar.
 - **CLI overrides** — `--max-concurrent-models`, `--max-concurrent-documents`, `--skip-extract`.
 - **`tests/test_concurrency.py`**, **`tests/test_orchestrator_parallel.py`**; updated benchmark, metrics, dashboard tests.
-- **Learning doc** — `files/PARALLEL_ORCHESTRATION.md` (local); Article 5 stub in `files/SUBSTACK_ARTICLE_BRIEF.md` §6.
+- **Learning doc** — `docs/learning/PARALLEL_ORCHESTRATION.md` (local); Article 5 stub in `files/SUBSTACK_ARTICLE_BRIEF.md` §6.
+
+### Fixed — Parallel dashboard + Jul 2026 model catalog
+
+- **Dashboard** — `add_script_run_ctx()` in `on_complete` fixes `NoSessionContext` when parallel model workers update Streamlit widgets.
+- **Model catalog** — restore Jul 2026 OpenRouter tier (`deepseek-v4-flash`, `glm-5.2`, `kimi-k2.6`, etc.); update `tests/test_config.py` expectations.
 
 ### Added — LLM-as-Judge summarisation metric
 

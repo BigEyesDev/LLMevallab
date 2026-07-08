@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+import threading
 import time
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
 from src.core.config import get_concurrency_settings, get_model_catalog, get_processed_path, load_config
 from src.core.models import BenchmarkReport, DocumentInput, ModelBenchmarkResult
@@ -641,16 +643,22 @@ def _run_with_progress(
         f"**{concurrency.max_concurrent_documents}** docs in parallel…"
     )
 
+    ctx = get_script_run_ctx()
+    ui_lock = threading.Lock()
+
     def on_complete(model_key: str, elapsed_sec: float) -> None:
-        completed_count["n"] += 1
-        completed_lines.append(
-            f"✅ **{model_key}** — {elapsed_sec:.1f}s · scored with {metric_names}"
-        )
-        completed_log.markdown("\n\n".join(completed_lines))
-        progress.progress(
-            completed_count["n"] / n,
-            text=f"{completed_count['n']}/{n} models complete",
-        )
+        if ctx is not None:
+            add_script_run_ctx(threading.current_thread(), ctx)
+        with ui_lock:
+            completed_count["n"] += 1
+            completed_lines.append(
+                f"✅ **{model_key}** — {elapsed_sec:.1f}s · scored with {metric_names}"
+            )
+            completed_log.markdown("\n\n".join(completed_lines))
+            progress.progress(
+                completed_count["n"] / n,
+                text=f"{completed_count['n']}/{n} models complete",
+            )
 
     report = runner.run(
         task=task,

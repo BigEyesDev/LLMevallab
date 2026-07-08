@@ -23,6 +23,7 @@ models:
   default: "gemini-2.5-flash"
 
   catalog:
+    # ── Tier 1: Direct provider APIs ────────────────────────────────────────
     gemini-2.5-flash:
       provider_type: gemini
       model_id: "gemini-2.5-flash"
@@ -31,7 +32,7 @@ models:
       max_output_tokens: 2048
       timeout_seconds: 30
       pricing:
-        input_per_1m: 0.075
+        input_per_1m: 0.075   # Google AI pricing (Jul 2026)
         output_per_1m: 0.30
 
     claude-sonnet-4-6:
@@ -41,7 +42,7 @@ models:
       temperature: 0.1
       max_output_tokens: 2048
       pricing:
-        input_per_1m: 3.00
+        input_per_1m: 3.00    # Anthropic pricing (Jul 2026)
         output_per_1m: 15.00
 
     gpt-4o-mini:
@@ -52,100 +53,112 @@ models:
       temperature: 0.1
       max_output_tokens: 2048
       pricing:
-        input_per_1m: 0.15
+        input_per_1m: 0.15    # OpenAI pricing (Jul 2026)
         output_per_1m: 0.60
 
-    llama-3.3-70b:
-      provider_type: openai_compatible
-      model_id: "meta-llama/llama-3.3-70b-instruct"
-      base_url: "https://openrouter.ai/api/v1"
-      api_key_env: OPENROUTER_API_KEY
-      temperature: 0.1
-      max_output_tokens: 2048
-      pricing:
-        input_per_1m: 0.10    # openrouter live: $0.10/1M in
-        output_per_1m: 0.32   # openrouter live: $0.32/1M out
+    # ── Tier 2: OpenRouter — top models by quality/cost/reach (Jul 2026) ───
+    # Pricing verified on openrouter.ai, Jul 2026. All use OPENROUTER_API_KEY.
 
-    deepseek-v3:
+    deepseek-v4-flash:
+      # DeepSeek V4 Flash (Apr 2026) — 284B/13B active MoE, 1M context.
+      # Pareto-best price/performance: ~79% SWE-bench Verified at lowest cost.
+      # Text-only; first-party API routes via China (data retention applies).
       provider_type: openai_compatible
-      model_id: "deepseek/deepseek-chat"
+      model_id: "deepseek/deepseek-v4-flash"
       base_url: "https://openrouter.ai/api/v1"
       api_key_env: OPENROUTER_API_KEY
       temperature: 0.1
       max_output_tokens: 2048
       pricing:
-        input_per_1m: 0.20    # openrouter live: $0.20/1M in
-        output_per_1m: 0.80   # openrouter live: $0.80/1M out
+        input_per_1m: 0.054   # openrouter live: $0.054/1M in
+        output_per_1m: 0.242  # openrouter live: $0.242/1M out
 
-    qwen3-30b:
+    deepseek-v4-pro:
+      # DeepSeek V4 Pro (Apr 2026) — 1.6T/49B active MoE, 1M context.
+      # Top open-weights coding score (80.6% SWE-bench Verified).
+      # Text-only. Use when marginal quality over Flash is worth ~8x output cost.
       provider_type: openai_compatible
-      model_id: "qwen/qwen3-30b-a3b"
+      model_id: "deepseek/deepseek-v4-pro"
       base_url: "https://openrouter.ai/api/v1"
       api_key_env: OPENROUTER_API_KEY
       temperature: 0.1
       max_output_tokens: 2048
       pricing:
-        input_per_1m: 0.12    # openrouter live: $0.12/1M in
-        output_per_1m: 0.50   # openrouter live: $0.50/1M out
+        input_per_1m: 0.435   # openrouter live: $0.435/1M in
+        output_per_1m: 0.87   # openrouter live: $0.870/1M out
 
-    qwen2.5-72b:
+    glm-5.2:
+      # GLM 5.2 (Z.ai / Zhipu, Jun 2026) — MIT licensed, 1M context.
+      # #1 open-weight on Artificial Analysis Intelligence Index v4.1 (score 51).
+      # Best open drop-in for Opus-style long-horizon planning and agentic coding.
+      # Text-only; can be token-hungry on reasoning-heavy tasks.
       provider_type: openai_compatible
-      model_id: "qwen/qwen-2.5-72b-instruct"
+      model_id: "z-ai/glm-5.2"
       base_url: "https://openrouter.ai/api/v1"
       api_key_env: OPENROUTER_API_KEY
       temperature: 0.1
       max_output_tokens: 2048
       pricing:
-        input_per_1m: 0.36    # openrouter live: $0.36/1M in
-        output_per_1m: 0.40   # openrouter live: $0.40/1M out
+        input_per_1m: 0.447   # openrouter live: $0.447/1M in
+        output_per_1m: 3.31   # openrouter live: $3.31/1M out
 
-    glm-4-7:
-      # thudm/glm-z1-32b is no longer listed on OpenRouter; z-ai/glm-4.7 is the
-      # current Zhipu AI GLM-4 flagship (same provider, same multilingual strength).
+    minimax-m3:
+      # MiniMax M3 (MiniMax, May 2026) — 428B/23B active MoE, 1M context.
+      # Native image + video input; best open multimodal + long-context model.
+      # MiniMax Sparse Attention (MSA) cuts compute ~20x vs prior gen at 1M tokens.
+      # Not MIT licensed — commercial use needs attribution/prior authorization at scale.
       provider_type: openai_compatible
-      model_id: "z-ai/glm-4.7"
+      model_id: "minimax/minimax-m3"
       base_url: "https://openrouter.ai/api/v1"
       api_key_env: OPENROUTER_API_KEY
       temperature: 0.1
       max_output_tokens: 2048
       pricing:
-        input_per_1m: 0.40    # openrouter live: $0.40/1M in
-        output_per_1m: 1.75   # openrouter live: $1.75/1M out
+        input_per_1m: 0.30    # openrouter live: $0.30/1M in
+        output_per_1m: 1.20   # openrouter live: $1.20/1M out
 
-    mistral-small-3.2:
-      # mistralai/mistral-7b-instruct is no longer on OpenRouter; mistral-small-3.2
-      # is Mistral's current small model — European, strong multilingual, 24B params.
+    kimi-k2.6:
+      # Kimi K2.6 (Moonshot AI, Apr 2026) — 262K context, multimodal.
+      # Agentic specialist: multi-agent orchestration, UI/UX generation, long-horizon coding.
+      # Agent swarm architecture scales to hundreds of parallel sub-agents.
       provider_type: openai_compatible
-      model_id: "mistralai/mistral-small-3.2-24b-instruct"
+      model_id: "moonshotai/kimi-k2.6"
       base_url: "https://openrouter.ai/api/v1"
       api_key_env: OPENROUTER_API_KEY
       temperature: 0.1
       max_output_tokens: 2048
       pricing:
-        input_per_1m: 0.075   # openrouter live: $0.075/1M in
-        output_per_1m: 0.20   # openrouter live: $0.20/1M out
+        input_per_1m: 0.66    # openrouter live: $0.66/1M in
+        output_per_1m: 3.41   # openrouter live: $3.41/1M out
 
-    phi-4:
+    nemotron-3-ultra:
+      # NVIDIA Nemotron 3 Ultra (Jun 2026) — 550B/55B active hybrid Mamba-2+Transformer MoE.
+      # 1M context, OpenMDW license, #2 open-weight on AA Index (score 48).
+      # Best U.S.-built open-weight option; NVIDIA stack + enterprise-grade deployment.
+      # Also available at :free route (lower SLA) for testing.
       provider_type: openai_compatible
-      model_id: "microsoft/phi-4"
+      model_id: "nvidia/nemotron-3-ultra-550b-a55b"
       base_url: "https://openrouter.ai/api/v1"
       api_key_env: OPENROUTER_API_KEY
       temperature: 0.1
       max_output_tokens: 2048
       pricing:
-        input_per_1m: 0.07    # openrouter live: $0.07/1M in
-        output_per_1m: 0.14   # openrouter live: $0.14/1M out
+        input_per_1m: 0.50    # openrouter live: $0.50/1M in
+        output_per_1m: 2.20   # openrouter live: $2.20/1M out
 
-    gemma-3-27b:
+    qwen3.7-plus:
+      # Qwen3.7 Plus (Alibaba, Jun 2026) — multimodal (text + image), 1M context.
+      # Hybrid architecture; strong multilingual, agentic coding, GUI navigation.
+      # Cost-effective mid-tier option in the Qwen3.7 family.
       provider_type: openai_compatible
-      model_id: "google/gemma-3-27b-it"
+      model_id: "qwen/qwen3.7-plus"
       base_url: "https://openrouter.ai/api/v1"
       api_key_env: OPENROUTER_API_KEY
       temperature: 0.1
       max_output_tokens: 2048
       pricing:
-        input_per_1m: 0.08    # openrouter live: $0.08/1M in
-        output_per_1m: 0.16   # openrouter live: $0.16/1M out
+        input_per_1m: 0.32    # openrouter live: $0.32/1M in
+        output_per_1m: 1.28   # openrouter live: $1.28/1M out
 
 # ─── Datasets ──────────────────────────────────────────────────────
 # sample_size controls how many docs download_and_prepare() saves.

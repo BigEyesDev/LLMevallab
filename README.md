@@ -148,7 +148,7 @@ python -m src.evaluations.benchmark \
   --skip-extract
 ```
 
-Parallel orchestration design (three options, tuning, CLI): see `files/PARALLEL_ORCHESTRATION.md` (local learning doc).
+Parallel orchestration design (three options, tuning, CLI): see [docs/learning/PARALLEL_ORCHESTRATION.md](docs/learning/PARALLEL_ORCHESTRATION.md) (local learning doc).
 
 See [RUNBOOK.md](RUNBOOK.md) for operational details.
 
