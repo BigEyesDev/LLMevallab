@@ -8,6 +8,8 @@ from nltk.translate.bleu_score import corpus_bleu, sentence_bleu, SmoothingFunct
 from rouge_score import rouge_scorer
 from bert_score import score as bert_score_fn
 
+from src.core.concurrency import ProviderLimiter, run_in_parallel
+from src.core.config import get_concurrency_settings
 from src.core.models import EvaluationScore
 
 logger = logging.getLogger(__name__)
@@ -276,10 +278,21 @@ class LLMJudgeMetric:
         config: dict,
         judge_model_key: str = "gpt-4o-mini",
         client: object | None = None,
+        provider_limiter: ProviderLimiter | None = None,
+        max_concurrent_judge_calls: int | None = None,
     ):
         self.judge_model_key = judge_model_key
         self._config = config
         self._client = client
+        concurrency = get_concurrency_settings(config)
+        self.provider_limiter = provider_limiter or ProviderLimiter(
+            concurrency.effective_provider_limits()
+        )
+        self.max_concurrent_judge_calls = (
+            max_concurrent_judge_calls
+            if max_concurrent_judge_calls is not None
+            else concurrency.max_concurrent_judge_calls
+        )
 
     def _get_client(self):
         if self._client is not None:
@@ -290,37 +303,32 @@ class LLMJudgeMetric:
         return self._client
 
     def score(self, inputs: list[MetricInput]) -> list[EvaluationScore]:
-        from src.evaluations.judge import normalize_score
-
         client = self._get_client()
-        scores: list[EvaluationScore] = []
+        provider_type = client.provider_type
 
         for item in inputs:
             if not item.source:
                 logger.warning(f"[{item.doc_id}] No source text for LLM judge — skipping.")
-                continue
 
-            dims, _latency_ms, metadata = client.evaluate(item.source, item.hypothesis)
-            normalized = {
-                k: normalize_score(dims[k])
-                for k in ("faithfulness", "completeness", "coherence")
-            }
-            overall = round(sum(normalized.values()) / 3, 4)
+        scorable = [(idx, item) for idx, item in enumerate(inputs) if item.source]
+        if not scorable:
+            return []
 
-            scores.append(EvaluationScore(
-                doc_id=item.doc_id,
-                metric_name=self.name,
-                score=overall,
-                metadata={
-                    **metadata,
-                    "faithfulness": dims["faithfulness"],
-                    "completeness": dims["completeness"],
-                    "coherence": dims["coherence"],
-                    "faithfulness_norm": normalized["faithfulness"],
-                    "completeness_norm": normalized["completeness"],
-                    "coherence_norm": normalized["coherence"],
-                },
-            ))
+        def _worker(pair: tuple[int, MetricInput]) -> tuple[int, EvaluationScore]:
+            idx, item = pair
+            return idx, self._evaluate_single(client, item, provider_type)
+
+        if self.max_concurrent_judge_calls <= 1:
+            scored = [_worker(pair) for pair in scorable]
+        else:
+            scored = run_in_parallel(
+                scorable,
+                _worker,
+                max_workers=self.max_concurrent_judge_calls,
+            )
+
+        scored.sort(key=lambda pair: pair[0])
+        scores = [result for _, result in scored]
 
         if scores:
             avg = sum(s.score for s in scores) / len(scores)
@@ -329,6 +337,45 @@ class LLMJudgeMetric:
                 f"(model={self.judge_model_key}, n={len(scores)})"
             )
         return scores
+
+    def _evaluate_single(
+        self,
+        client,
+        item: MetricInput,
+        provider_type: str,
+    ) -> EvaluationScore:
+        from src.evaluations.judge import normalize_score
+
+        def _call():
+            return client.evaluate(item.source, item.hypothesis)
+
+        if self.provider_limiter:
+            sem = self.provider_limiter.acquire(provider_type)
+            with sem:
+                dims, _latency_ms, metadata = _call()
+        else:
+            dims, _latency_ms, metadata = _call()
+
+        normalized = {
+            k: normalize_score(dims[k])
+            for k in ("faithfulness", "completeness", "coherence")
+        }
+        overall = round(sum(normalized.values()) / 3, 4)
+
+        return EvaluationScore(
+            doc_id=item.doc_id,
+            metric_name=self.name,
+            score=overall,
+            metadata={
+                **metadata,
+                "faithfulness": dims["faithfulness"],
+                "completeness": dims["completeness"],
+                "coherence": dims["coherence"],
+                "faithfulness_norm": normalized["faithfulness"],
+                "completeness_norm": normalized["completeness"],
+                "coherence_norm": normalized["coherence"],
+            },
+        )
 
 
 class MetricsRunner:

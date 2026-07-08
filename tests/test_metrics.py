@@ -92,6 +92,7 @@ def test_config_translation_metrics_include_comet():
 
 def test_llm_judge_metric_scores_with_mock_client():
     mock_client = MagicMock()
+    mock_client.provider_type = "openai_compatible"
     mock_client.evaluate.return_value = (
         {"faithfulness": 5, "completeness": 4, "coherence": 3},
         120.5,
@@ -130,8 +131,39 @@ def test_llm_judge_metric_scores_with_mock_client():
     )
 
 
+def test_llm_judge_parallel_preserves_order():
+    mock_client = MagicMock()
+    mock_client.provider_type = "openai_compatible"
+    call_order: list[str] = []
+
+    def evaluate(source, hypothesis):
+        doc_id = "d1" if "one" in source else "d2"
+        call_order.append(doc_id)
+        return (
+            {"faithfulness": 4, "completeness": 4, "coherence": 4},
+            50.0,
+            {"judge_model": "gpt-4o-mini", "latency_ms": 50.0},
+        )
+
+    mock_client.evaluate.side_effect = evaluate
+    config = load_config()
+    config["evaluation"]["max_concurrent_judge_calls"] = 2
+
+    metric = LLMJudgeMetric(config=config, judge_model_key="gpt-4o-mini", client=mock_client)
+    inputs = [
+        MetricInput(doc_id="d1", hypothesis="S1", reference="R1", source="Article one."),
+        MetricInput(doc_id="d2", hypothesis="S2", reference="R2", source="Article two."),
+    ]
+
+    scores = metric.score(inputs)
+
+    assert [s.doc_id for s in scores] == ["d1", "d2"]
+    assert mock_client.evaluate.call_count == 2
+
+
 def test_llm_judge_skips_missing_source():
     mock_client = MagicMock()
+    mock_client.provider_type = "openai_compatible"
     metric = LLMJudgeMetric(config={}, client=mock_client)
     inputs = [
         MetricInput(doc_id="d1", hypothesis="Summary.", reference="Ref.", source=""),
@@ -145,6 +177,7 @@ def test_llm_judge_skips_missing_source():
 
 def test_metrics_runner_includes_llm_judge():
     mock_client = MagicMock()
+    mock_client.provider_type = "openai_compatible"
     mock_client.evaluate.return_value = (
         {"faithfulness": 4, "completeness": 4, "coherence": 4},
         50.0,
