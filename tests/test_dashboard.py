@@ -359,25 +359,29 @@ def _run_progress_patched(runner, task, model_keys, documents, config=None):
         return _run_with_progress(runner, task, model_keys, documents, config)
 
 
-def test_run_with_progress_calls_runner_per_model():
+def test_run_with_progress_calls_runner_once_with_all_models():
     model_keys = ["model-a", "model-b"]
     documents = [_make_doc_input("d1"), _make_doc_input("d2"), _make_doc_input("d3")]
 
     runner = MagicMock()
-    runner.run.side_effect = [
-        _make_single_model_report("model-a", n_docs=3),
-        _make_single_model_report("model-b", n_docs=3),
-    ]
+    runner.run.return_value = BenchmarkReport(
+        task="summarisation",
+        sample_size=3,
+        results=[
+            _make_single_model_report("model-a", n_docs=3).results[0],
+            _make_single_model_report("model-b", n_docs=3).results[0],
+        ],
+        prompt_version="1",
+    )
 
     report = _run_progress_patched(runner, "summarisation", model_keys, documents)
 
-    assert runner.run.call_count == 2
-    runner.run.assert_any_call(
-        task="summarisation", model_keys=["model-a"], sample_size=3, documents=documents
-    )
-    runner.run.assert_any_call(
-        task="summarisation", model_keys=["model-b"], sample_size=3, documents=documents
-    )
+    runner.run.assert_called_once()
+    call_kwargs = runner.run.call_args.kwargs
+    assert call_kwargs["model_keys"] == model_keys
+    assert call_kwargs["documents"] == documents
+    assert call_kwargs["sample_size"] == 3
+    assert callable(call_kwargs["on_complete"])
     assert len(report.results) == 2
     assert report.task == "summarisation"
     assert report.sample_size == 3
@@ -388,8 +392,12 @@ def test_run_with_progress_combines_results():
     documents = [_make_doc_input(f"d{i}") for i in range(3)]
 
     runner = MagicMock()
-    runner.prompts = {"version": 2}
-    runner.run.side_effect = [_make_single_model_report(k, n_docs=3) for k in model_keys]
+    runner.run.return_value = BenchmarkReport(
+        task="summarisation",
+        sample_size=3,
+        results=[_make_single_model_report(k, n_docs=3).results[0] for k in model_keys],
+        prompt_version="2",
+    )
 
     report = _run_progress_patched(runner, "summarisation", model_keys, documents)
 

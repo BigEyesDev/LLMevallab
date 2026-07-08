@@ -12,7 +12,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from src.core.config import get_model_catalog, get_processed_path, load_config
+from src.core.config import get_concurrency_settings, get_model_catalog, get_processed_path, load_config
 from src.core.models import BenchmarkReport, DocumentInput, ModelBenchmarkResult
 from src.evaluations.benchmark import BenchmarkRunner
 from src.evaluations.metric_registry import (
@@ -302,6 +302,12 @@ def _sidebar_settings(config: dict) -> tuple[str, list[str], int]:
             max_value=30,
             value=5,
             help="Sets the initial document selection. You can override it in the dataset grid below.",
+        )
+
+        concurrency = get_concurrency_settings(config)
+        st.caption(
+            f"Running up to {concurrency.max_concurrent_models} models × "
+            f"{concurrency.max_concurrent_documents} docs in parallel"
         )
 
     return task, model_keys, sample_size
@@ -618,50 +624,48 @@ def _run_with_progress(
     documents: list[DocumentInput],
     config: dict,
 ) -> BenchmarkReport:
-    """Run each model and surface real-time per-model progress in the UI."""
+    """Run all models via BenchmarkRunner with per-model progress callbacks."""
     n = len(model_keys)
     n_docs = len(documents)
     metric_names = " · ".join(get_task_metric_display_names(config, task) or ["metrics"])
 
-    accumulated: list[ModelBenchmarkResult] = []
     progress = st.progress(0.0, text="Starting benchmark…")
-    completed_log = st.empty()      # grows: one line per finished model
-    current_step = st.empty()       # replaced each iteration: shows current model
-
+    completed_log = st.empty()
+    current_step = st.empty()
     completed_lines: list[str] = []
+    completed_count = {"n": 0}
 
-    for i, model_key in enumerate(model_keys):
-        progress.progress(i / n, text=f"Step {i + 1}/{n} — {model_key}")
-        current_step.markdown(
-            f"⏳ **{model_key}** — sending {n_docs} doc{'s' if n_docs != 1 else ''} "
-            f"to API for {task}…"
-        )
+    concurrency = get_concurrency_settings(config)
+    current_step.markdown(
+        f"⏳ Running up to **{concurrency.max_concurrent_models}** models × "
+        f"**{concurrency.max_concurrent_documents}** docs in parallel…"
+    )
 
-        t0 = time.perf_counter()
-        single = runner.run(
-            task=task,
-            model_keys=[model_key],
-            sample_size=n_docs,
-            documents=documents,
-        )
-        elapsed = time.perf_counter() - t0
-
-        accumulated.extend(single.results)
-
+    def on_complete(model_key: str, elapsed_sec: float) -> None:
+        completed_count["n"] += 1
         completed_lines.append(
-            f"✅ **{model_key}** — {elapsed:.1f}s · scored with {metric_names}"
+            f"✅ **{model_key}** — {elapsed_sec:.1f}s · scored with {metric_names}"
         )
         completed_log.markdown("\n\n".join(completed_lines))
-        current_step.empty()
-        progress.progress((i + 1) / n, text=f"Step {i + 1}/{n} — {model_key} complete")
+        progress.progress(
+            completed_count["n"] / n,
+            text=f"{completed_count['n']}/{n} models complete",
+        )
 
-    progress.progress(1.0, text=f"✅ {n} model{'s' if n > 1 else ''} evaluated on {n_docs} docs")
-    return BenchmarkReport(
+    report = runner.run(
         task=task,
+        model_keys=model_keys,
         sample_size=n_docs,
-        results=accumulated,
-        prompt_version=get_prompt_version(runner.prompts),
+        documents=documents,
+        on_complete=on_complete,
     )
+
+    current_step.empty()
+    progress.progress(
+        1.0,
+        text=f"✅ {n} model{'s' if n > 1 else ''} evaluated on {n_docs} docs",
+    )
+    return report
 
 
 # ---------------------------------------------------------------------------
