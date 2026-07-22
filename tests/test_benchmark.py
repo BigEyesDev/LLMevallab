@@ -87,7 +87,7 @@ def test_benchmark_core_loop_one_result_per_model_and_same_docs(config_and_promp
     )
 
     class FakeOrchestrator:
-        def __init__(self, processor, config, task):
+        def __init__(self, processor, config, task, **kwargs):
             pass
 
         def run(self, documents):
@@ -99,7 +99,7 @@ def test_benchmark_core_loop_one_result_per_model_and_same_docs(config_and_promp
         return_value=[sample_document],
     ), patch(
         "src.evaluations.benchmark.build_processor",
-        return_value=MagicMock(model_name="fake-model"),
+        return_value=MagicMock(model_name="fake-model", config={"provider_type": "gemini"}),
     ), patch(
         "src.evaluations.benchmark.PipelineOrchestrator",
         FakeOrchestrator,
@@ -241,6 +241,68 @@ def test_print_benchmark_table_includes_model_names(capsys):
     output = capsys.readouterr().out
     assert "gemini-2.5-fla" in output
     assert "claude-sonnet-" in output
+
+
+def test_benchmark_parallel_preserves_model_order(config_and_prompts, sample_document):
+    config, prompts = config_and_prompts
+    config = {**config, "benchmark": {**config.get("benchmark", {}), "max_concurrent_models": 3}}
+    runner = BenchmarkRunner(config=config, prompts=prompts)
+    order_seen: list[str] = []
+
+    fake_pipeline = [
+        PipelineResult(
+            document=sample_document,
+            translation=TranslationResult(
+                doc_id="doc-1",
+                source_language="de",
+                target_language="en",
+                original_text=sample_document.raw_text,
+                translated_text="The parliament met.",
+                model_used="fake-model",
+                processing_time_ms=100.0,
+                token_usage=TokenUsage(input_tokens=10, output_tokens=5),
+                cost_usd=0.001,
+            ),
+            total_processing_time_ms=100.0,
+        )
+    ]
+    fake_eval = EvaluationReport(
+        model_used="fake-model",
+        aggregate={"bleu": {"mean": 0.5, "min": 0.5, "max": 0.5, "std": 0.0, "n_docs": 1}},
+    )
+
+    class FakeOrchestrator:
+        def __init__(self, processor, config, task, **kwargs):
+            order_seen.append(kwargs.get("model_key", ""))
+
+        def run(self, documents):
+            return fake_pipeline
+
+    with patch(
+        "src.evaluations.benchmark.load_documents_for_task",
+        return_value=[sample_document],
+    ), patch(
+        "src.evaluations.benchmark.build_processor",
+        return_value=MagicMock(model_name="fake-model", config={"provider_type": "gemini"}),
+    ), patch(
+        "src.evaluations.benchmark.PipelineOrchestrator",
+        FakeOrchestrator,
+    ), patch(
+        "src.evaluations.benchmark.Evaluator.run_on_results",
+        return_value=fake_eval,
+    ):
+        report = runner.run(
+            task=PipelineTask.TRANSLATION,
+            model_keys=["gemini-2.5-flash", "claude-sonnet-4-6", "gpt-4o-mini"],
+            sample_size=1,
+        )
+
+    assert [r.model_key for r in report.results] == [
+        "gemini-2.5-flash",
+        "claude-sonnet-4-6",
+        "gpt-4o-mini",
+    ]
+    assert len(order_seen) == 3
 
 
 def test_load_documents_for_task_slices_sample(config_and_prompts):

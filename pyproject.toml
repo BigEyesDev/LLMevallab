@@ -7,7 +7,7 @@ packages = ["src"]
 
 [project]
 name = "llmevallab"
-version = "0.3.0"
+version = "0.4.0"
 description = "Model-agnostic LLM document evaluation and benchmarking"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -25,6 +25,7 @@ dependencies = [
     "nltk>=3.8.2",
     "rouge-score==0.1.2",
     "bert-score==0.3.13",
+    "unbabel-comet>=2.2.0",
     "torch==2.3.1",
     "transformers==4.41.2",
     # Data & Utils

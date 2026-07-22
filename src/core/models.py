@@ -105,6 +105,10 @@ class PipelineResult(AppModel):
         default=None,
         description="Truncation metadata — populated when a per-task length limit is applied",
     )
+    prompt_version: Optional[str] = Field(
+        default=None,
+        description="Prompt template version from configs/prompts.yaml at run time",
+    )
 
 
 class EvaluationScore(AppModel):
@@ -147,6 +151,14 @@ class RunManifest(AppModel):
         description="Pipeline + model config slice captured at run time",
     )
     results_path: str = Field(..., description="Path to the results JSON produced by this run")
+    document_set_name: str = Field(
+        default="",
+        description="Human-readable document set name from registry (e.g. 'pearl_wish')",
+    )
+    selection_hash: str = Field(
+        default="",
+        description="12-char content hash of task + doc_ids selection",
+    )
     created_at: str = Field(default_factory=utc_now_iso, description="ISO-8601 UTC timestamp")
 
 
@@ -181,3 +193,19 @@ class BenchmarkReport(AppModel):
     run_timestamp: str = Field(default_factory=utc_now_iso)
     sample_size: int
     results: list[ModelBenchmarkResult] = Field(default_factory=list)
+    prompt_version: Optional[str] = Field(
+        default=None,
+        description="Prompt template version used for this benchmark run",
+    )
+    doc_ids: list[str] = Field(
+        default_factory=list,
+        description="Ordered doc_ids used in this benchmark (shared across all models)",
+    )
+    document_set_name: str = Field(
+        default="",
+        description="Human-readable document set name from registry (e.g. 'pearl_wish')",
+    )
+    selection_hash: str = Field(
+        default="",
+        description="12-char content hash of task + doc_ids selection",
+    )

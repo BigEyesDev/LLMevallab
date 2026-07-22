@@ -33,10 +33,18 @@ logger = logging.getLogger(__name__)
 # This prevents running BLEU on summaries or ROUGE on translations —
 # each metric is only meaningful in the right context.
 TASK_METRICS: dict[PipelineTask, list[str]] = {
-    PipelineTask.TRANSLATION:   ["bleu", "bertscore"],
-    PipelineTask.SUMMARISATION: ["rouge", "bertscore"],
-    PipelineTask.FULL:          ["bleu", "rouge", "bertscore"],
+    PipelineTask.TRANSLATION:   ["bleu", "bertscore", "comet"],
+    PipelineTask.SUMMARISATION: ["rouge", "bertscore", "llm_judge"],
+    PipelineTask.FULL:          ["bleu", "rouge", "bertscore", "comet", "llm_judge"],
 }
+
+
+def get_task_metrics(config: dict, task: PipelineTask) -> list[str]:
+    """Return metrics for *task* from config, falling back to TASK_METRICS."""
+    metrics_cfg = config.get("evaluation", {}).get("metrics", {})
+    if task.value in metrics_cfg:
+        return metrics_cfg[task.value]
+    return TASK_METRICS[task]
 
 # Which field in the pipeline result to use as the hypothesis per task
 TASK_HYPOTHESIS_FIELD: dict[PipelineTask, str] = {
@@ -231,10 +239,13 @@ def build_metric_inputs(
             skipped += 1
             continue
 
+        source = result.get("document", {}).get("raw_text", "")
+
         inputs.append(MetricInput(
             doc_id=doc_id,
             hypothesis=hypothesis,
             reference=reference,
+            source=source,
         ))
 
     logger.info(f"Paired {len(inputs)} documents for evaluation (skipped={skipped})")
@@ -371,9 +382,10 @@ class Evaluator:
     def __init__(self, config: dict):
         self.config = config
         self.report_dir = config.get("paths", {}).get("reports", "outputs/reports/")
-        self.bertscore_model = (
-            config.get("evaluation", {}).get("bertscore_model", "microsoft/deberta-xlarge-mnli")
-        )
+        eval_cfg = config.get("evaluation", {})
+        self.bertscore_model = eval_cfg.get("bertscore_model", "microsoft/deberta-xlarge-mnli")
+        self.comet_model = eval_cfg.get("comet_model", "Unbabel/wmt22-comet-da")
+        self.judge_model_key = eval_cfg.get("judge_model", "gpt-4o-mini")
 
     def run_on_manifest(
         self,
@@ -500,12 +512,15 @@ class Evaluator:
                 "results and ground truth, and that the correct task is set."
             )
 
-        metrics_to_run = TASK_METRICS[task]
+        metrics_to_run = get_task_metrics(self.config, task)
         logger.info(f"Running metrics: {metrics_to_run}")
 
         runner = MetricsRunner(
             metrics=metrics_to_run,
             bertscore_model=self.bertscore_model,
+            comet_model=self.comet_model,
+            config=self.config,
+            judge_model_key=self.judge_model_key,
         )
         all_scores = runner.run_all(metric_inputs)
         aggregate = aggregate_scores(all_scores)

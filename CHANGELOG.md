@@ -7,6 +7,74 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-22
+
+### Added — Document sets, run fingerprint, and durable run history
+
+- **`src/pipeline/document_sets.py`** — content-addressed document-set registry (`selection_hash` + auto names like `lemon_stem`).
+- **`compute_run_fingerprint()`** — dashboard cache key includes task, models, selection hash, prompt version, and skip-extraction so prompt edits cannot serve stale scores.
+- **`src/pipeline/run_history.py`** — persisted run-history helpers for the dashboard sidebar.
+- **`RunManifest` / `BenchmarkReport`** — `document_set_name` and `selection_hash` fields for provenance.
+- **`scripts/evaluate_today_runs.py`** — batch-evaluate today's pipeline results with optional light/resume modes.
+- **Tests** — `tests/test_document_sets.py`, `tests/test_run_history.py`, expanded provenance and dashboard tests.
+
+### Added — Parallel benchmark orchestration
+
+- **`src/core/concurrency.py`** — `ConcurrencySettings`, `ProviderLimiter`, `run_in_parallel()` for bounded I/O parallelism.
+- **Two-level parallelism** — `BenchmarkRunner` pools models; `PipelineOrchestrator` pools documents; `LLMJudgeMetric` pools judge calls.
+- **Provider semaphores** — per-provider rate limits in `evaluation.provider_limits` (gemini, claude, openai_compatible).
+- **`skip_extraction`** — summarisation flag + `--skip-extract` CLI halves inference calls when extract is unused.
+- **Config knobs** — `max_concurrent_documents`, `max_concurrent_models`, `max_concurrent_judge_calls`.
+- **Dashboard** — single `BenchmarkRunner.run()` with `on_complete` progress; concurrency caption in sidebar.
+- **CLI overrides** — `--max-concurrent-models`, `--max-concurrent-documents`, `--skip-extract`.
+- **`tests/test_concurrency.py`**, **`tests/test_orchestrator_parallel.py`**; updated benchmark, metrics, dashboard tests.
+
+### Fixed — Parallel dashboard + Jul 2026 model catalog
+
+- **Dashboard** — `add_script_run_ctx()` in `on_complete` fixes `NoSessionContext` when parallel model workers update Streamlit widgets.
+- **Model catalog** — restore Jul 2026 OpenRouter tier (`deepseek-v4-flash`, `glm-5.2`, `kimi-k2.6`, etc.); update `tests/test_config.py` expectations.
+
+### Added — LLM-as-Judge summarisation metric
+
+- **`LLMJudgeMetric`** and **`JudgeClient`** — configurable judge model scores faithfulness, completeness, and coherence (1-5, normalized to 0-1) by comparing summaries against source documents.
+- **`llm_judge`** wired into `MetricsRunner`, summarisation metrics in `configs/config.yaml`, and `evaluation.judge_model` config key (default `gpt-4o-mini`).
+- Per-document **latency and token cost** tracked in `EvaluationScore.metadata`.
+- **`tests/test_judge.py`** and extended **`tests/test_metrics.py`** with mocked judge responses.
+
+### Added — COMET translation metric
+
+- **`COMETMetric`** in `src/evaluations/metrics.py` — reference-based neural MT evaluation via `unbabel-comet` (lazy import; default model `Unbabel/wmt22-comet-da`).
+- **`comet`** wired into `MetricsRunner`, translation metrics in `configs/config.yaml`, and evaluator config resolution via `get_task_metrics()`.
+- **`MetricInput.source`** — source document text passed to COMET for hypothesis/reference pairing.
+- **`tests/test_metrics.py`** — unit tests with mocked COMET model (no HF download in CI).
+
+### Added — Dashboard config-driven metrics
+
+- **`src/evaluations/metric_registry.py`** — single source of truth for metric display names, explainers, verdict thresholds, and task metric lists (reads from `configs/config.yaml`).
+- **`app/dashboard.py`** — pre-run explainers, bar charts, insights, and cost scatter now derive from config + registry; COMET and LLM Judge fully visible without hardcoded dashboard updates.
+
+### Added — Prompt editor, run history, polish (Phase 3c)
+
+- **`src/pipeline/prompt_manager.py`** — load, version, and snapshot prompt templates; snapshots written to `configs/prompt_history/` on save.
+- **Dashboard prompt editor** — sidebar expander to view/edit system and user templates; **Save as new version** increments `configs/prompts.yaml` version.
+- **Session run history** — last 5 benchmark runs in sidebar; click to restore results.
+- **`PipelineResult.prompt_version`** and **`BenchmarkReport.prompt_version`** — trace every result to the prompt version used.
+- **`Makefile`** — `setup`, `run`, and `test` targets.
+- **`docs/MODELS.md`** — model catalog with smoke-test scores and known quirks.
+- **README overhaul** — one-command quickstart, model pricing table, architecture diagram, Makefile docs.
+- **`tests/test_prompt_manager.py`** and dashboard unit tests for run-history helpers.
+
+## [0.3.1] - 2026-07-06
+
+### Added — Dashboard re-run workflow
+
+- **Configure new run** sidebar button (green) — returns to the full setup view after a benchmark without losing checkbox selections.
+- **Change document selection & re-run** expander on the results page — pick different docs and click **Run Benchmark** again without leaving results.
+
+### Fixed
+
+- **Configure new run** now enables immediately when results exist — sidebar button renders after the run handler stores `report`, not before.
+
 ## [0.3.0] - 2026-07-06
 
 ### Added — Local Streamlit dashboard + offline benchmark samples (Phase 3a/3b)

@@ -44,6 +44,13 @@ def test_pipeline_result_round_trip_with_token_usage():
     assert restored.translation.cost_usd == 0.000018
 
 
+def test_pipeline_result_carries_prompt_version():
+    doc = DocumentInput(doc_id="d1", source_language="de", raw_text="Hallo")
+    result = PipelineResult(document=doc, prompt_version="4")
+    restored = PipelineResult.model_validate(json.loads(result.model_dump_json()))
+    assert restored.prompt_version == "4"
+
+
 def test_benchmark_report_round_trip():
     report = BenchmarkReport(
         task="translation",

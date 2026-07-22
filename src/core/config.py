@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from src.core.concurrency import ConcurrencySettings
+
 REQUIRED_CATALOG_FIELDS = ("provider_type", "model_id", "api_key_env", "pricing")
 REQUIRED_PRICING_FIELDS = ("input_per_1m", "output_per_1m")
 
@@ -71,6 +73,20 @@ def europarl_processed_path(sample_size: int, language_pair: str = "de-en") -> s
 
 def cnn_dailymail_processed_path(sample_size: int) -> str:
     return f"data/processed/cnn_dailymail/cnn_dailymail_{sample_size}docs.json"
+
+
+def get_concurrency_settings(config: dict) -> ConcurrencySettings:
+    """Parse concurrency knobs from config.yaml."""
+    pipeline = config.get("pipeline", {})
+    benchmark = config.get("benchmark", {})
+    evaluation = config.get("evaluation", {})
+    return ConcurrencySettings(
+        max_concurrent_documents=int(pipeline.get("max_concurrent_documents", 1)),
+        skip_extraction=bool(pipeline.get("skip_extraction", False)),
+        max_concurrent_models=int(benchmark.get("max_concurrent_models", 1)),
+        max_concurrent_judge_calls=int(evaluation.get("max_concurrent_judge_calls", 1)),
+        provider_limits=evaluation.get("provider_limits"),
+    )
 
 
 def get_processed_path(config: dict, dataset_key: str) -> str:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+import threading
 import time
 from pathlib import Path
 
@@ -11,58 +12,34 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
-from src.core.config import get_model_catalog, get_processed_path, load_config
+from src.core.config import get_concurrency_settings, get_model_catalog, get_processed_path, load_config
+from src.core.provenance import compute_run_fingerprint, selection_hash as _selection_hash
 from src.core.models import BenchmarkReport, DocumentInput, ModelBenchmarkResult
 from src.evaluations.benchmark import BenchmarkRunner
+from src.evaluations.metric_registry import (
+    display_name,
+    get_task_metric_display_names,
+    metric_info_for_display,
+    primary_scatter_metric,
+    quality_columns_in_dataframe,
+    quality_context,
+)
 from src.pipeline.benchmark_sample_loader import BenchmarkSampleLoader
+from src.pipeline.document_sets import DocumentSet, load_registry, lookup_by_hash
 from src.pipeline.orchestrator import PipelineTask, load_prompts
+from src.pipeline.prompt_manager import (
+    get_prompt_version,
+    get_task_prompts,
+    save_prompt_version,
+)
 
 load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-_METRIC_DISPLAY: dict[str, str] = {
-    "bleu": "BLEU",
-    "rouge": "ROUGE-L",
-    "rouge_l": "ROUGE-L",   # evaluator emits "rouge_l"; keep "rouge" for back-compat
-    "bertscore": "BERTScore",
-}
-
-_METRIC_DESCRIPTIONS: dict[str, dict] = {
-    "BLEU": {
-        "short": "N-gram word overlap vs. reference. Higher = closer word-for-word match.",
-        "range": "0 – 1",
-        "good": "> 0.30 for translation",
-        "detail": (
-            "Counts how many short word sequences (n-grams) appear in both the model output "
-            "and the human reference. Fast to compute and widely used, but does not capture "
-            "paraphrases — a perfect synonym scores zero."
-        ),
-    },
-    "ROUGE-L": {
-        "short": "Longest common subsequence vs. reference. Captures sentence structure.",
-        "range": "0 – 1",
-        "good": "> 0.25 for news summarisation",
-        "detail": (
-            "Finds the longest sequence of words that appear in both texts (in order, not "
-            "necessarily contiguous). Rewards outputs that preserve the flow and structure of "
-            "the reference. The standard metric for news summarisation benchmarks."
-        ),
-    },
-    "BERTScore": {
-        "short": "Semantic similarity via BERT embeddings. Robust to paraphrasing.",
-        "range": "0 – 1",
-        "good": "> 0.70 (F1, DeBERTa model)",
-        "detail": (
-            "Embeds each token with a pre-trained BERT model and computes cosine similarity "
-            "between output and reference. A paraphrase that conveys the same meaning "
-            "scores highly even if no words overlap. Most correlated with human judgment."
-        ),
-    },
-}
 
 _TASK_META: dict[str, dict] = {
     "translation": {
@@ -73,7 +50,6 @@ _TASK_META: dict[str, dict] = {
         ),
         "dataset": "EuroParl (EU Parliament proceedings)",
         "dataset_key": "europarl",
-        "metrics": ["BLEU", "BERTScore"],
         "preview_field": "raw_text",
         "preview_label": "Source (German)",
         "preview_ref_field": "reference_translation",
@@ -87,7 +63,6 @@ _TASK_META: dict[str, dict] = {
         ),
         "dataset": "CNN / DailyMail (news articles)",
         "dataset_key": "cnn_dailymail",
-        "metrics": ["ROUGE-L", "BERTScore"],
         "preview_field": "raw_text",
         "preview_label": "Article",
         "preview_ref_field": "reference_summary",
@@ -97,6 +72,7 @@ _TASK_META: dict[str, dict] = {
 
 _PALETTE = ["#4F8EF7", "#F7884F", "#4FF7A0", "#F74F92", "#B44FF7", "#F7D24F"]
 _RUNNABLE_TASKS = [PipelineTask.SUMMARISATION.value, PipelineTask.TRANSLATION.value]
+_MAX_RUN_HISTORY = 5
 
 # Rough characters-per-token estimates used for pre-run cost hints.
 # GPT-style tokenisers average ~4 chars/token for English.
@@ -216,8 +192,70 @@ def _get_selected_docs(all_docs: list[dict]) -> list[dict]:
     return [d for d in all_docs if st.session_state.get(f"_doc_cb_{d['doc_id']}", False)]
 
 
-def _cache_key(task: str, model_keys: list[str], doc_ids: list[str]) -> tuple:
-    return (task, tuple(sorted(model_keys)), tuple(sorted(doc_ids)))
+def _run_fingerprint(
+    task: str,
+    model_keys: list[str],
+    doc_ids: list[str],
+    prompt_version: str,
+) -> str:
+    """Stable cache key covering task, models, document selection, and prompt version."""
+    sel_hash = _selection_hash(task, doc_ids)
+    return compute_run_fingerprint(
+        task=task,
+        model_keys=model_keys,
+        sel_hash=sel_hash,
+        prompt_version=str(prompt_version),
+    )
+
+
+def _clear_run_state() -> None:
+    """Drop stored results so the pre-run setup view is shown again."""
+    for key in ("report", "report_task", "_from_cache", "_restored_set_name", "_restored_sel_hash"):
+        st.session_state.pop(key, None)
+
+
+def _selected_doc_ids(all_docs: list[dict]) -> list[str]:
+    return [d["doc_id"] for d in _get_selected_docs(all_docs)]
+
+
+def _top_metric_scores(report: BenchmarkReport) -> dict[str, float]:
+    """Best score per quality metric across all models in a report."""
+    scores: dict[str, float] = {}
+    for result in report.results:
+        for metric, value in result.quality_metrics.items():
+            label = display_name(metric)
+            scores[label] = max(scores.get(label, float("-inf")), value)
+    return scores
+
+
+def _make_history_entry(
+    report: BenchmarkReport,
+    model_keys: list[str],
+    prompt_version: str,
+) -> dict:
+    return {
+        "timestamp": report.run_timestamp,
+        "task": report.task,
+        "models": list(model_keys),
+        "doc_count": report.sample_size,
+        "prompt_version": prompt_version,
+        "top_scores": _top_metric_scores(report),
+        "report": report,
+    }
+
+
+def _append_run_history(entry: dict) -> None:
+    history = st.session_state.setdefault("_run_history", [])
+    history.insert(0, entry)
+    st.session_state["_run_history"] = history[:_MAX_RUN_HISTORY]
+
+
+def _history_button_label(entry: dict) -> str:
+    ts = entry["timestamp"][:16].replace("T", " ")
+    models = ", ".join(entry["models"][:2])
+    if len(entry["models"]) > 2:
+        models += f" +{len(entry['models']) - 2}"
+    return f"{ts} · {entry['task']} · {models}"
 
 
 # ---------------------------------------------------------------------------
@@ -228,11 +266,42 @@ _DATA_SOURCE_SAMPLES = "Benchmark samples"
 _DATA_SOURCE_FULL = "Full dataset"
 
 
-def _sidebar(config: dict) -> tuple[str, list[str], int, bool, str]:
+def _inject_sidebar_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"] .st-key-sidebar_configure_new_run button[kind="secondary"],
+        [data-testid="stSidebar"] .st-key-sidebar_configure_new_run button[kind="primary"] {
+            background-color: #22c55e !important;
+            color: #ffffff !important;
+            border: 1px solid #16a34a !important;
+        }
+        [data-testid="stSidebar"] .st-key-sidebar_configure_new_run button:hover:not(:disabled) {
+            background-color: #16a34a !important;
+            border-color: #15803d !important;
+            color: #ffffff !important;
+        }
+        [data-testid="stSidebar"] .st-key-sidebar_configure_new_run button:disabled {
+            background-color: #1f2937 !important;
+            color: #6b7280 !important;
+            border-color: #374151 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _has_stored_report() -> bool:
+    return st.session_state.get("report") is not None
+
+
+def _sidebar_settings(config: dict) -> tuple[str, list[str], int]:
     catalog: dict = get_model_catalog(config)
     default_model = config.get("models", {}).get("default", list(catalog.keys())[0])
 
     with st.sidebar:
+        _inject_sidebar_styles()
         st.header("Benchmark Settings")
 
         task: str = st.selectbox("Task", _RUNNABLE_TASKS)
@@ -251,13 +320,17 @@ def _sidebar(config: dict) -> tuple[str, list[str], int, bool, str]:
             help="Sets the initial document selection. You can override it in the dataset grid below.",
         )
 
-        run_clicked: bool = st.button(
-            "Run Benchmark",
-            disabled=not model_keys,
-            use_container_width=True,
-            type="primary",
+        concurrency = get_concurrency_settings(config)
+        st.caption(
+            f"Running up to {concurrency.max_concurrent_models} models × "
+            f"{concurrency.max_concurrent_documents} docs in parallel"
         )
 
+    return task, model_keys, sample_size
+
+
+def _sidebar_data_source() -> str:
+    with st.sidebar:
         st.divider()
         data_source: str = st.radio(
             "Data source",
@@ -276,8 +349,149 @@ def _sidebar(config: dict) -> tuple[str, list[str], int, bool, str]:
             ),
         )
         st.caption("API keys from `.env`.")
+    return data_source
 
-    return task, model_keys, sample_size, run_clicked, data_source
+
+def _sidebar_prompt_editor(task: str, prompts: dict) -> None:
+    """View and edit task prompts; save creates a versioned snapshot."""
+    version = get_prompt_version(prompts)
+    task_prompts = get_task_prompts(prompts, task)
+
+    with st.sidebar:
+        st.divider()
+        with st.expander(f"Prompts (v{version})", expanded=False):
+            st.caption(f"**{task}** templates from `configs/prompts.yaml`")
+            st.markdown("**System**")
+            st.code(task_prompts["system"], language=None)
+            st.markdown("**User template**")
+            st.code(task_prompts["user"], language=None)
+
+            st.markdown("**Edit**")
+            system = st.text_area(
+                "System prompt",
+                value=task_prompts["system"],
+                height=120,
+                key=f"_prompt_sys_{task}",
+            )
+            user = st.text_area(
+                "User template",
+                value=task_prompts["user"],
+                height=180,
+                key=f"_prompt_user_{task}",
+            )
+            note = st.text_input(
+                "Version note",
+                placeholder="e.g. shorter summary",
+                key="_prompt_note",
+            )
+            if st.button("Save as new version", key="_prompt_save", use_container_width=True):
+                new_version = save_prompt_version(task, system, user, note)
+                _load_resources.clear()
+                st.toast(f"Saved prompt v{new_version}", icon="💾")
+                st.rerun()
+
+
+def _sidebar_run_history() -> None:
+    """Collapsible list of the last five benchmark runs in this session."""
+    history: list[dict] = st.session_state.get("_run_history", [])
+    if not history:
+        return
+
+    with st.sidebar:
+        st.divider()
+        with st.expander("Recent runs", expanded=False):
+            st.caption("Click a run to restore its results in the main view.")
+            for i, entry in enumerate(history):
+                if st.button(
+                    _history_button_label(entry),
+                    key=f"_hist_{i}",
+                    use_container_width=True,
+                ):
+                    st.session_state["report"] = entry["report"]
+                    st.session_state["report_task"] = entry["task"]
+                    st.session_state["_from_cache"] = False
+                    st.rerun()
+                score_parts = [
+                    f"{metric} {value:.3f}" for metric, value in entry["top_scores"].items()
+                ]
+                st.caption(
+                    f"v{entry['prompt_version']} · {entry['doc_count']} docs"
+                    + (f" · {' · '.join(score_parts)}" if score_parts else "")
+                )
+
+
+def _sidebar_saved_doc_sets(all_docs: list[dict], task: str) -> None:
+    """Sidebar expander — saved document sets from the registry, restore on click."""
+    try:
+        registry = load_registry()
+    except Exception:
+        return
+
+    task_sets = [ds for ds in registry.values() if ds.task == task]
+    if not task_sets:
+        return
+
+    task_sets.sort(key=lambda ds: ds.last_used_at, reverse=True)
+    all_doc_ids = {d["doc_id"] for d in all_docs}
+
+    with st.sidebar:
+        st.divider()
+        with st.expander("Saved document sets", expanded=False):
+            st.caption("Previously benchmarked selections — click **Use** to restore.")
+            for ds in task_sets:
+                missing = [did for did in ds.doc_ids if did not in all_doc_ids]
+                col_name, col_btn = st.columns([3, 1])
+                col_name.markdown(
+                    f"**{ds.set_name}**  \n"
+                    f"`{ds.selection_hash}` · {ds.n_docs} docs"
+                )
+                if missing:
+                    col_name.caption(f"⚠️ {len(missing)} doc(s) missing from current dataset")
+                btn_disabled = bool(missing)
+                if col_btn.button(
+                    "Use",
+                    key=f"_docset_use_{ds.set_name}",
+                    use_container_width=True,
+                    disabled=btn_disabled,
+                    help=f"Restore selection: {', '.join(ds.doc_ids[:3])}{'…' if len(ds.doc_ids) > 3 else ''}",
+                ):
+                    target_ids = set(ds.doc_ids)
+                    for doc in all_docs:
+                        st.session_state[f"_doc_cb_{doc['doc_id']}"] = (
+                            doc["doc_id"] in target_ids
+                        )
+                    st.session_state["_restored_set_name"] = ds.set_name
+                    st.session_state["_restored_sel_hash"] = ds.selection_hash
+                    st.rerun()
+
+
+def _sidebar_run_button(model_keys: list[str]) -> bool:
+    with st.sidebar:
+        return st.button(
+            "Run Benchmark",
+            disabled=not model_keys,
+            width="stretch",
+            type="primary",
+        )
+
+
+def _sidebar_configure_button() -> None:
+    """Rendered after the run handler so enabled state reflects stored results."""
+    has_report = _has_stored_report()
+    with st.sidebar:
+        if st.button(
+            "Configure new run",
+            key="sidebar_configure_new_run",
+            width="stretch",
+            disabled=not has_report,
+            help=(
+                "Return to document selection and model setup. Keeps your current checkbox choices."
+                if has_report
+                else "Available after you run a benchmark."
+            ),
+        ):
+            _clear_run_state()
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +507,7 @@ def _render_pre_run(
 ) -> None:
     meta = _TASK_META.get(task, {})
     catalog = get_model_catalog(config)
+    task_metrics = get_task_metric_display_names(config, task)
 
     # Task context card
     with st.container(border=True):
@@ -300,15 +515,15 @@ def _render_pre_run(
         cols[0].markdown(f"### {meta.get('label', task.title())}")
         cols[0].markdown(meta.get("description", ""))
         cols[1].metric("Dataset", meta.get("dataset", "—"))
-        cols[2].metric("Metrics", "  ·  ".join(meta.get("metrics", [])))
+        cols[2].metric("Metrics", "  ·  ".join(task_metrics) if task_metrics else "—")
 
     st.divider()
 
-    # Metric explainer cards — one per metric, side by side
+    # Metric explainer cards — one per configured metric, side by side
     st.markdown("#### What will be measured")
-    metric_cols = st.columns(len(meta.get("metrics", [])))
-    for i, metric_name in enumerate(meta.get("metrics", [])):
-        info = _METRIC_DESCRIPTIONS.get(metric_name, {})
+    metric_cols = st.columns(max(len(task_metrics), 1))
+    for i, metric_name in enumerate(task_metrics):
+        info = metric_info_for_display(metric_name)
         with metric_cols[i]:
             with st.container(border=True):
                 st.markdown(f"**{metric_name}**")
@@ -316,8 +531,10 @@ def _render_pre_run(
                 st.markdown(
                     f"Range: `{info.get('range', '—')}`  ·  Good score: `{info.get('good', '—')}`"
                 )
-                with st.expander("How it works"):
-                    st.markdown(info.get("detail", ""))
+                detail = info.get("detail", "")
+                if detail:
+                    with st.expander("How it works"):
+                        st.markdown(detail)
 
     st.divider()
 
@@ -360,7 +577,7 @@ def _render_pre_run(
         .get("max_document_length_per_task", {})
         .get(task, config.get("pipeline", {}).get("max_document_length", 2000))
     )
-    _render_doc_grid(all_docs, sample_size, meta, truncation_limit, model_keys, catalog)
+    _render_doc_grid(all_docs, sample_size, meta, truncation_limit, model_keys, catalog, task=task)
 
 
 def _render_doc_grid(
@@ -370,11 +587,31 @@ def _render_doc_grid(
     truncation_limit: int,
     model_keys: list[str],
     catalog: dict,
+    task: str = "",
 ) -> None:
     """Render an interactive card grid for selecting which docs to benchmark."""
     n_selected = sum(
         1 for d in all_docs if st.session_state.get(f"_doc_cb_{d['doc_id']}", False)
     )
+
+    # Document set banner — shown when the current selection matches a saved set
+    restored_name = st.session_state.get("_restored_set_name", "")
+    restored_hash = st.session_state.get("_restored_sel_hash", "")
+    if not restored_name and task and n_selected > 0:
+        current_ids = [d["doc_id"] for d in all_docs if st.session_state.get(f"_doc_cb_{d['doc_id']}", False)]
+        try:
+            matched = lookup_by_hash(_selection_hash(task, current_ids))
+            if matched:
+                restored_name = matched.set_name
+                restored_hash = matched.selection_hash
+        except Exception:
+            pass
+    if restored_name:
+        st.info(
+            f"Document set **{restored_name}** (`{restored_hash}`) — "
+            f"{n_selected} docs restored. Pick models, then Run.",
+            icon="📂",
+        )
 
     # Header + quick-action buttons
     st.markdown("#### Select documents to benchmark")
@@ -466,46 +703,56 @@ def _run_with_progress(
     task: str,
     model_keys: list[str],
     documents: list[DocumentInput],
+    config: dict,
 ) -> BenchmarkReport:
-    """Run each model and surface real-time per-model progress in the UI."""
+    """Run all models via BenchmarkRunner with per-model progress callbacks."""
     n = len(model_keys)
     n_docs = len(documents)
-    metric_names = " · ".join(_TASK_META.get(task, {}).get("metrics", ["metrics"]))
+    metric_names = " · ".join(get_task_metric_display_names(config, task) or ["metrics"])
 
-    accumulated: list[ModelBenchmarkResult] = []
     progress = st.progress(0.0, text="Starting benchmark…")
-    completed_log = st.empty()      # grows: one line per finished model
-    current_step = st.empty()       # replaced each iteration: shows current model
-
+    completed_log = st.empty()
+    current_step = st.empty()
     completed_lines: list[str] = []
+    completed_count = {"n": 0}
 
-    for i, model_key in enumerate(model_keys):
-        progress.progress(i / n, text=f"Step {i + 1}/{n} — {model_key}")
-        current_step.markdown(
-            f"⏳ **{model_key}** — sending {n_docs} doc{'s' if n_docs != 1 else ''} "
-            f"to API for {task}…"
-        )
+    concurrency = get_concurrency_settings(config)
+    current_step.markdown(
+        f"⏳ Running up to **{concurrency.max_concurrent_models}** models × "
+        f"**{concurrency.max_concurrent_documents}** docs in parallel…"
+    )
 
-        t0 = time.perf_counter()
-        single = runner.run(
-            task=task,
-            model_keys=[model_key],
-            sample_size=n_docs,
-            documents=documents,
-        )
-        elapsed = time.perf_counter() - t0
+    ctx = get_script_run_ctx()
+    ui_lock = threading.Lock()
 
-        accumulated.extend(single.results)
+    def on_complete(model_key: str, elapsed_sec: float) -> None:
+        if ctx is not None:
+            add_script_run_ctx(threading.current_thread(), ctx)
+        with ui_lock:
+            completed_count["n"] += 1
+            completed_lines.append(
+                f"✅ **{model_key}** — {elapsed_sec:.1f}s · scored with {metric_names}"
+            )
+            completed_log.markdown("\n\n".join(completed_lines))
+            progress.progress(
+                completed_count["n"] / n,
+                text=f"{completed_count['n']}/{n} models complete",
+            )
 
-        completed_lines.append(
-            f"✅ **{model_key}** — {elapsed:.1f}s · scored with {metric_names}"
-        )
-        completed_log.markdown("\n\n".join(completed_lines))
-        current_step.empty()
-        progress.progress((i + 1) / n, text=f"Step {i + 1}/{n} — {model_key} complete")
+    report = runner.run(
+        task=task,
+        model_keys=model_keys,
+        sample_size=n_docs,
+        documents=documents,
+        on_complete=on_complete,
+    )
 
-    progress.progress(1.0, text=f"✅ {n} model{'s' if n > 1 else ''} evaluated on {n_docs} docs")
-    return BenchmarkReport(task=task, sample_size=n_docs, results=accumulated)
+    current_step.empty()
+    progress.progress(
+        1.0,
+        text=f"✅ {n} model{'s' if n > 1 else ''} evaluated on {n_docs} docs",
+    )
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -517,7 +764,7 @@ def _to_dataframe(report: BenchmarkReport) -> pd.DataFrame:
     for r in report.results:
         row: dict = {"Model": r.model_key}
         for key, value in r.quality_metrics.items():
-            row[_METRIC_DISPLAY.get(key, key.upper())] = round(value, 4)
+            row[display_name(key)] = round(value, 4)
         cost_per_doc = round(r.total_cost_usd / r.n_docs, 8) if r.n_docs else 0.0
         row.update({
             "Avg In Tokens": round(r.avg_input_tokens),
@@ -531,21 +778,8 @@ def _to_dataframe(report: BenchmarkReport) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _quality_context(metric: str, score: float) -> str:
-    """Map a metric score to a human-readable verdict."""
-    thresholds: dict[str, list[tuple[float, str]]] = {
-        "BLEU":      [(0.40, "excellent"), (0.30, "good"), (0.15, "moderate"), (0.0, "low")],
-        "ROUGE-L":   [(0.45, "excellent"), (0.30, "good"), (0.15, "moderate"), (0.0, "low")],
-        "BERTScore": [(0.80, "excellent"), (0.70, "good"), (0.60, "moderate"), (0.0, "low")],
-    }
-    for threshold, label in thresholds.get(metric, []):
-        if score >= threshold:
-            return label
-    return "—"
-
-
 def _render_insights(df: pd.DataFrame) -> None:
-    quality_cols = [c for c in df.columns if c in _METRIC_DESCRIPTIONS]
+    quality_cols = quality_columns_in_dataframe(df)
     if not quality_cols or df.empty:
         return
 
@@ -554,7 +788,7 @@ def _render_insights(df: pd.DataFrame) -> None:
     for col in quality_cols:
         best = df.loc[df[col].idxmax()]
         spread = df[col].max() - df[col].min()
-        verdict = _quality_context(col, best[col])
+        verdict = quality_context(col, best[col])
         lines.append(
             f"**{col}** — Best: **{best['Model']}** ({best[col]:.4f} — *{verdict}*)"
             + (f"  ·  Spread across models: {spread:.4f}" if len(df) > 1 else "")
@@ -596,7 +830,7 @@ def _render_insights(df: pd.DataFrame) -> None:
             st.markdown(f"- {line}")
         with st.expander("What do these scores mean?"):
             for col in quality_cols:
-                info = _METRIC_DESCRIPTIONS.get(col, {})
+                info = metric_info_for_display(col)
                 st.markdown(
                     f"**{col}** (`{info.get('range', '—')}`) — "
                     f"{info.get('short', '')}  Good: `{info.get('good', '—')}`."
@@ -604,7 +838,7 @@ def _render_insights(df: pd.DataFrame) -> None:
 
 
 def _render_metric_bars(df: pd.DataFrame, colors: dict[str, str]) -> None:
-    quality_cols = [c for c in df.columns if c in _METRIC_DESCRIPTIONS]
+    quality_cols = quality_columns_in_dataframe(df)
     if not quality_cols:
         return
 
@@ -642,17 +876,18 @@ def _render_metric_bars(df: pd.DataFrame, colors: dict[str, str]) -> None:
         )
 
 
-def _render_cost_scatter(df: pd.DataFrame, colors: dict[str, str]) -> None:
-    if "BERTScore" not in df.columns or df.empty:
+def _render_cost_scatter(df: pd.DataFrame, colors: dict[str, str], config: dict, task: str) -> None:
+    scatter_metric = primary_scatter_metric(config, task, df)
+    if not scatter_metric or df.empty:
         return
 
     st.subheader("Cost vs. Quality")
     st.caption(
-        "Ideal model: **top-left** — highest semantic quality at lowest cost. "
+        f"Ideal model: **top-left** — highest {scatter_metric} at lowest cost. "
         "Point size encodes avg latency (larger = slower). Hover for details."
     )
 
-    chart_df = df[["Model", "Cost/Doc ($)", "BERTScore", "Avg Latency (ms)"]].copy()
+    chart_df = df[["Model", "Cost/Doc ($)", scatter_metric, "Avg Latency (ms)"]].copy()
     color_scale = alt.Scale(domain=list(colors.keys()), range=list(colors.values()))
 
     scatter = (
@@ -666,8 +901,8 @@ def _render_cost_scatter(df: pd.DataFrame, colors: dict[str, str]) -> None:
                 scale=alt.Scale(padding=0.4),
             ),
             y=alt.Y(
-                "BERTScore:Q",
-                title="BERTScore (semantic quality)",
+                f"{scatter_metric}:Q",
+                title=f"{scatter_metric} (quality)",
                 scale=alt.Scale(domain=[0, 1]),
             ),
             color=alt.Color("Model:N", scale=color_scale),
@@ -678,7 +913,7 @@ def _render_cost_scatter(df: pd.DataFrame, colors: dict[str, str]) -> None:
             ),
             tooltip=[
                 "Model:N",
-                alt.Tooltip("BERTScore:Q", format=".4f"),
+                alt.Tooltip(f"{scatter_metric}:Q", format=".4f"),
                 alt.Tooltip("Cost/Doc ($):Q", format=".6f"),
                 alt.Tooltip("Avg Latency (ms):Q", format=".0f"),
             ],
@@ -690,7 +925,7 @@ def _render_cost_scatter(df: pd.DataFrame, colors: dict[str, str]) -> None:
         .mark_text(dy=-16, fontSize=12, fontWeight="bold")
         .encode(
             x="Cost/Doc ($):Q",
-            y="BERTScore:Q",
+            y=f"{scatter_metric}:Q",
             text="Model:N",
             color=alt.Color("Model:N", scale=color_scale, legend=None),
         )
@@ -734,7 +969,10 @@ def main() -> None:
     )
 
     config, prompts = _load_resources(*_resource_mtimes())
-    task, model_keys, sample_size, run_clicked, data_source = _sidebar(config)
+    task, model_keys, sample_size = _sidebar_settings(config)
+    data_source = _sidebar_data_source()
+    _sidebar_prompt_editor(task, prompts)
+    run_clicked = _sidebar_run_button(model_keys)
 
     # Load documents for the selected data source
     if data_source == _DATA_SOURCE_SAMPLES:
@@ -755,26 +993,42 @@ def main() -> None:
     selected_docs = _get_selected_docs(all_docs)
 
     # ── Handle Run ──────────────────────────────────────────────────────────
+    current_prompt_version = get_prompt_version(prompts)
     if run_clicked and model_keys and selected_docs:
-        cache_key = _cache_key(task, model_keys, [d["doc_id"] for d in selected_docs])
+        doc_ids_selected = [d["doc_id"] for d in selected_docs]
+        cache_key = _run_fingerprint(task, model_keys, doc_ids_selected, current_prompt_version)
         cached = st.session_state.get("_run_cache", {}).get(cache_key)
 
         if cached:
             st.session_state["report"] = cached
             st.session_state["report_task"] = task
             st.session_state["_from_cache"] = True
-            st.toast("Loaded from cache — same docs & models.", icon="💾")
+            set_hint = f" ({cached.document_set_name})" if cached.document_set_name else ""
+            st.toast(f"Loaded from cache — same docs & models{set_hint}.", icon="💾")
         else:
             doc_inputs = [DocumentInput(**d) for d in selected_docs]
             runner = BenchmarkRunner(config=config, prompts=prompts)
-            report = _run_with_progress(runner, task, model_keys, doc_inputs)
+            report = _run_with_progress(runner, task, model_keys, doc_inputs, config)
             st.session_state.setdefault("_run_cache", {})[cache_key] = report
             st.session_state["report"] = report
             st.session_state["report_task"] = task
             st.session_state["_from_cache"] = False
+            _append_run_history(
+                _make_history_entry(
+                    report,
+                    model_keys,
+                    report.prompt_version or get_prompt_version(prompts),
+                )
+            )
 
     elif run_clicked and not selected_docs:
         st.warning("No documents selected — check at least one doc in the grid below.", icon="⚠️")
+
+    _sidebar_run_history()
+    _sidebar_saved_doc_sets(all_docs, task)
+
+    # Render after run handler so enabled state reflects results stored this pass.
+    _sidebar_configure_button()
 
     # ── Render ───────────────────────────────────────────────────────────────
     report: BenchmarkReport | None = st.session_state.get("report")
@@ -787,7 +1041,39 @@ def main() -> None:
 
     from_cache = st.session_state.get("_from_cache", False)
     cache_badge = "  ·  💾 from cache" if from_cache else ""
-    st.subheader(f"Results — task: {report.task}  ·  {report.sample_size} docs{cache_badge}")
+    prompt_badge = (
+        f"  ·  prompt v{report.prompt_version}" if report.prompt_version else ""
+    )
+    set_badge = (
+        f"  ·  set **{report.document_set_name}**" if report.document_set_name else ""
+    )
+    selected_ids = _selected_doc_ids(all_docs)
+
+    st.subheader(
+        f"Results — task: {report.task}  ·  {report.sample_size} docs"
+        f"{prompt_badge}{set_badge}{cache_badge}"
+    )
+    with st.expander(
+        f"Change document selection & re-run ({len(selected_ids)} docs selected)",
+        expanded=False,
+    ):
+        st.caption(
+            "Pick different documents below, then click **Run Benchmark** in the sidebar. "
+            "Results update in place; identical task/model/doc combos load from cache."
+        )
+        truncation_limit: int = (
+            config.get("pipeline", {})
+            .get("max_document_length_per_task", {})
+            .get(task, config.get("pipeline", {}).get("max_document_length", 2000))
+        )
+        _render_doc_grid(
+            all_docs,
+            sample_size,
+            _TASK_META.get(task, {}),
+            truncation_limit,
+            model_keys,
+            get_model_catalog(config),
+        )
 
     df = _to_dataframe(report)
     colors = _model_colors([r.model_key for r in report.results])
@@ -801,7 +1087,7 @@ def main() -> None:
     _render_metric_bars(df, colors)
 
     st.divider()
-    _render_cost_scatter(df, colors)
+    _render_cost_scatter(df, colors, config, task)
 
     st.divider()
     _render_export(report, df)

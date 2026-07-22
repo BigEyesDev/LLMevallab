@@ -267,3 +267,5 @@ Add `secrets.GEMINI_API_KEY` in **GitHub → Settings → Secrets and variables 
 | `--frozen` | CI must not silently upgrade a dependency |
 | `matrix.python-version` | Ready to expand; `fail-fast: false` gives full visibility |
 | `--tb=short` | Readable CI logs |
+
+**See also:** [PARALLEL_ORCHESTRATION.md](PARALLEL_ORCHESTRATION.md) — bounded parallelism for benchmark runs; `test_dashboard.py` covers Streamlit progress helpers with mocked widgets (no browser in CI).

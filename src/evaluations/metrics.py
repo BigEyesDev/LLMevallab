@@ -8,6 +8,8 @@ from nltk.translate.bleu_score import corpus_bleu, sentence_bleu, SmoothingFunct
 from rouge_score import rouge_scorer
 from bert_score import score as bert_score_fn
 
+from src.core.concurrency import ProviderLimiter, run_in_parallel
+from src.core.config import get_concurrency_settings
 from src.core.models import EvaluationScore
 
 logger = logging.getLogger(__name__)
@@ -23,6 +25,7 @@ class MetricInput:
     doc_id: str
     hypothesis: str    # LLM output (what we're evaluating)
     reference: str     # Ground truth (what it should be)
+    source: str = ""   # Original document text (required for COMET translation scoring)
 
 
 class BLEUMetric:
@@ -185,6 +188,196 @@ class BERTScoreMetric:
         return scores
 
 
+class COMETMetric:
+    """
+    COMET — Crosslingual Optimized Metric for Evaluation of Translation.
+
+    Neural metric trained on human quality judgments. Requires source text,
+    machine translation (hypothesis), and reference translation.
+
+    Score range: typically 0.0–1.0 (higher is better)
+    Typical use: translation quality (reference-based)
+
+    Paper: https://arxiv.org/abs/2009.09036
+    """
+
+    name = "comet"
+
+    def __init__(
+        self,
+        model_name: str = "Unbabel/wmt22-comet-da",
+        model: object | None = None,
+    ):
+        self.model_name = model_name
+        self._model = model
+
+    def _load_model(self):
+        if self._model is not None:
+            return self._model
+        try:
+            from comet import download_model, load_from_checkpoint
+        except ImportError as exc:
+            raise ImportError(
+                "COMET requires 'unbabel-comet'. Install with: uv add unbabel-comet"
+            ) from exc
+        model_path = download_model(self.model_name)
+        self._model = load_from_checkpoint(model_path)
+        return self._model
+
+    def score(self, inputs: list[MetricInput]) -> list[EvaluationScore]:
+        data = []
+        for item in inputs:
+            if not item.source:
+                logger.warning(f"[{item.doc_id}] No source text for COMET — using empty string.")
+            data.append({
+                "src": item.source,
+                "mt": item.hypothesis,
+                "ref": item.reference,
+            })
+
+        logger.info(f"Computing COMET ({self.model_name}) on {len(inputs)} docs...")
+        model = self._load_model()
+        output = model.predict(data, batch_size=8, gpus=0)
+
+        scores: list[EvaluationScore] = []
+        for i, item in enumerate(inputs):
+            scores.append(EvaluationScore(
+                doc_id=item.doc_id,
+                metric_name=self.name,
+                score=round(float(output.scores[i]), 4),
+            ))
+
+        scores.append(EvaluationScore(
+            doc_id="__corpus__",
+            metric_name=f"{self.name}_corpus",
+            score=round(float(output.system_score), 4),
+        ))
+
+        avg = sum(s.score for s in scores if s.doc_id != "__corpus__") / len(inputs) if inputs else 0
+        logger.info(f"COMET average score: {avg:.4f} (system={output.system_score:.4f})")
+        return scores
+
+
+class LLMJudgeMetric:
+    """
+    LLM-as-Judge — uses a separate LLM to score summary quality.
+
+    Evaluates faithfulness, completeness, and coherence on a 1-5 scale,
+    normalized to 0-1 for the primary score (mean of the three dimensions).
+
+    Requires source document text in MetricInput.source.
+    Typical use: summarisation quality (reference-free or with reference in metadata)
+
+    Tracks per-call latency and token cost in EvaluationScore.metadata.
+    """
+
+    name = "llm_judge"
+
+    def __init__(
+        self,
+        config: dict,
+        judge_model_key: str = "gpt-4o-mini",
+        client: object | None = None,
+        provider_limiter: ProviderLimiter | None = None,
+        max_concurrent_judge_calls: int | None = None,
+    ):
+        self.judge_model_key = judge_model_key
+        self._config = config
+        self._client = client
+        concurrency = get_concurrency_settings(config)
+        self.provider_limiter = provider_limiter or ProviderLimiter(
+            concurrency.effective_provider_limits()
+        )
+        self.max_concurrent_judge_calls = (
+            max_concurrent_judge_calls
+            if max_concurrent_judge_calls is not None
+            else concurrency.max_concurrent_judge_calls
+        )
+
+    def _get_client(self):
+        if self._client is not None:
+            return self._client
+        from src.evaluations.judge import JudgeClient
+
+        self._client = JudgeClient(self._config, self.judge_model_key)
+        return self._client
+
+    def score(self, inputs: list[MetricInput]) -> list[EvaluationScore]:
+        client = self._get_client()
+        provider_type = client.provider_type
+
+        for item in inputs:
+            if not item.source:
+                logger.warning(f"[{item.doc_id}] No source text for LLM judge — skipping.")
+
+        scorable = [(idx, item) for idx, item in enumerate(inputs) if item.source]
+        if not scorable:
+            return []
+
+        def _worker(pair: tuple[int, MetricInput]) -> tuple[int, EvaluationScore]:
+            idx, item = pair
+            return idx, self._evaluate_single(client, item, provider_type)
+
+        if self.max_concurrent_judge_calls <= 1:
+            scored = [_worker(pair) for pair in scorable]
+        else:
+            scored = run_in_parallel(
+                scorable,
+                _worker,
+                max_workers=self.max_concurrent_judge_calls,
+            )
+
+        scored.sort(key=lambda pair: pair[0])
+        scores = [result for _, result in scored]
+
+        if scores:
+            avg = sum(s.score for s in scores) / len(scores)
+            logger.info(
+                f"LLM judge average score: {avg:.4f} "
+                f"(model={self.judge_model_key}, n={len(scores)})"
+            )
+        return scores
+
+    def _evaluate_single(
+        self,
+        client,
+        item: MetricInput,
+        provider_type: str,
+    ) -> EvaluationScore:
+        from src.evaluations.judge import normalize_score
+
+        def _call():
+            return client.evaluate(item.source, item.hypothesis)
+
+        if self.provider_limiter:
+            sem = self.provider_limiter.acquire(provider_type)
+            with sem:
+                dims, _latency_ms, metadata = _call()
+        else:
+            dims, _latency_ms, metadata = _call()
+
+        normalized = {
+            k: normalize_score(dims[k])
+            for k in ("faithfulness", "completeness", "coherence")
+        }
+        overall = round(sum(normalized.values()) / 3, 4)
+
+        return EvaluationScore(
+            doc_id=item.doc_id,
+            metric_name=self.name,
+            score=overall,
+            metadata={
+                **metadata,
+                "faithfulness": dims["faithfulness"],
+                "completeness": dims["completeness"],
+                "coherence": dims["coherence"],
+                "faithfulness_norm": normalized["faithfulness"],
+                "completeness_norm": normalized["completeness"],
+                "coherence_norm": normalized["coherence"],
+            },
+        )
+
+
 class MetricsRunner:
     """
     Convenience class that runs all configured metrics in one call.
@@ -198,15 +391,30 @@ class MetricsRunner:
         "bleu": BLEUMetric,
         "rouge": ROUGEMetric,
         "bertscore": BERTScoreMetric,
+        "comet": COMETMetric,
+        "llm_judge": LLMJudgeMetric,
     }
 
-    def __init__(self, metrics: list[str], bertscore_model: str = "microsoft/deberta-xlarge-mnli"):
+    def __init__(
+        self,
+        metrics: list[str],
+        bertscore_model: str = "microsoft/deberta-xlarge-mnli",
+        comet_model: str = "Unbabel/wmt22-comet-da",
+        config: dict | None = None,
+        judge_model_key: str = "gpt-4o-mini",
+    ):
         self._metrics = []
         for name in metrics:
             if name not in self.AVAILABLE_METRICS:
                 raise ValueError(f"Unknown metric: '{name}'. Available: {list(self.AVAILABLE_METRICS)}")
             if name == "bertscore":
                 self._metrics.append(BERTScoreMetric(model_type=bertscore_model))
+            elif name == "comet":
+                self._metrics.append(COMETMetric(model_name=comet_model))
+            elif name == "llm_judge":
+                if config is None:
+                    raise ValueError("LLM judge metric requires config dict.")
+                self._metrics.append(LLMJudgeMetric(config=config, judge_model_key=judge_model_key))
             else:
                 self._metrics.append(self.AVAILABLE_METRICS[name]())
 

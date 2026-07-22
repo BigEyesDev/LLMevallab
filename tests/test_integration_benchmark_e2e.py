@@ -81,7 +81,7 @@ def test_benchmark_runner_e2e_two_mocked_models(tmp_path):
         return StubProcessor(catalog[model_key]["model_id"])
 
     class FakeOrchestrator:
-        def __init__(self, processor, config, task):
+        def __init__(self, processor, config, task, **kwargs):
             self.processor = processor
 
         def run(self, docs):

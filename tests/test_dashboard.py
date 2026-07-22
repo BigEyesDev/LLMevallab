@@ -119,24 +119,62 @@ def test_to_dataframe_multiple_models():
 # Unit: _quality_context — score-to-verdict mapping
 # ---------------------------------------------------------------------------
 
+def test_to_dataframe_comet_and_llm_judge_columns():
+    from app.dashboard import _to_dataframe
+
+    report = BenchmarkReport(
+        task="translation",
+        sample_size=1,
+        results=[
+            ModelBenchmarkResult(
+                model_key="m1",
+                model_id="org/m1",
+                quality_metrics={"comet": 0.88, "bleu": 0.35},
+                n_docs=1,
+            )
+        ],
+    )
+    df = _to_dataframe(report)
+    assert "COMET" in df.columns
+    assert "BLEU" in df.columns
+
+
+def test_top_metric_scores_uses_display_names():
+    from app.dashboard import _top_metric_scores
+
+    report = BenchmarkReport(
+        task="summarisation",
+        sample_size=1,
+        results=[
+            ModelBenchmarkResult(
+                model_key="m1",
+                model_id="org/m1",
+                quality_metrics={"llm_judge": 0.82},
+                n_docs=1,
+            )
+        ],
+    )
+    assert _top_metric_scores(report)["LLM Judge"] == 0.82
+
+
 def test_quality_context_bertscore_excellent():
-    from app.dashboard import _quality_context
-    assert _quality_context("BERTScore", 0.85) == "excellent"
+    from src.evaluations.metric_registry import quality_context
+    assert quality_context("BERTScore", 0.85) == "excellent"
 
 
 def test_quality_context_bertscore_good():
-    from app.dashboard import _quality_context
-    assert _quality_context("BERTScore", 0.72) == "good"
+    from src.evaluations.metric_registry import quality_context
+    assert quality_context("BERTScore", 0.72) == "good"
 
 
 def test_quality_context_rouge_moderate():
-    from app.dashboard import _quality_context
-    assert _quality_context("ROUGE-L", 0.20) == "moderate"
+    from src.evaluations.metric_registry import quality_context
+    assert quality_context("ROUGE-L", 0.20) == "moderate"
 
 
 def test_quality_context_bleu_low():
-    from app.dashboard import _quality_context
-    assert _quality_context("BLEU", 0.05) == "low"
+    from src.evaluations.metric_registry import quality_context
+    assert quality_context("BLEU", 0.05) == "low"
 
 
 # ---------------------------------------------------------------------------
@@ -161,22 +199,22 @@ def test_model_colors_wraps_palette():
 
 
 # ---------------------------------------------------------------------------
-# Unit: _cache_key — deterministic regardless of order
+# Unit: _run_fingerprint — deterministic regardless of order
 # ---------------------------------------------------------------------------
 
 def test_cache_key_order_independent():
-    from app.dashboard import _cache_key
+    from app.dashboard import _run_fingerprint
     assert (
-        _cache_key("summarisation", ["b", "a"], ["d2", "d1"])
-        == _cache_key("summarisation", ["a", "b"], ["d1", "d2"])
+        _run_fingerprint("summarisation", ["b", "a"], ["d2", "d1"], "3")
+        == _run_fingerprint("summarisation", ["a", "b"], ["d1", "d2"], "3")
     )
 
 
 def test_cache_key_differs_by_task():
-    from app.dashboard import _cache_key
+    from app.dashboard import _run_fingerprint
     assert (
-        _cache_key("translation", ["m"], ["d1"])
-        != _cache_key("summarisation", ["m"], ["d1"])
+        _run_fingerprint("translation", ["m"], ["d1"], "3")
+        != _run_fingerprint("summarisation", ["m"], ["d1"], "3")
     )
 
 
@@ -234,6 +272,47 @@ def test_data_source_constants_defined():
     assert _DATA_SOURCE_FULL == "Full dataset"
 
 
+def test_clear_run_state_removes_report_keys():
+    from app.dashboard import _clear_run_state
+
+    fake_state = {
+        "report": "dummy",
+        "report_task": "summarisation",
+        "_from_cache": True,
+        "_doc_cb_d1": True,
+    }
+    with patch("app.dashboard.st.session_state", fake_state):
+        _clear_run_state()
+
+    assert "report" not in fake_state
+    assert "report_task" not in fake_state
+    assert "_from_cache" not in fake_state
+    assert fake_state["_doc_cb_d1"] is True  # doc selection preserved
+
+
+def test_has_stored_report():
+    from app.dashboard import _has_stored_report
+
+    with patch("app.dashboard.st.session_state", {}):
+        assert not _has_stored_report()
+
+    with patch("app.dashboard.st.session_state", {"report": object()}):
+        assert _has_stored_report()
+
+
+def test_selected_doc_ids_returns_checked_docs():
+    from app.dashboard import _selected_doc_ids
+
+    docs = [
+        {"doc_id": "d1", "raw_text": "a"},
+        {"doc_id": "d2", "raw_text": "b"},
+    ]
+    fake_state = {"_doc_cb_d1": True, "_doc_cb_d2": False}
+
+    with patch("app.dashboard.st.session_state", fake_state):
+        assert _selected_doc_ids(docs) == ["d1"]
+
+
 # ---------------------------------------------------------------------------
 # Unit: _get_selected_docs — reads from session_state
 # ---------------------------------------------------------------------------
@@ -264,40 +343,86 @@ def _mock_progress():
     return p
 
 
-def _run_progress_patched(runner, task, model_keys, documents):
+def _run_progress_patched(runner, task, model_keys, documents, config=None):
     """Run _run_with_progress with all Streamlit calls mocked."""
     from app.dashboard import _run_with_progress
 
     mock_progress = MagicMock()
     mock_empty = MagicMock()
+    config = config or {"evaluation": {"metrics": {"summarisation": ["rouge", "bertscore"]}}}
 
     with (
         patch("app.dashboard.st.progress", return_value=mock_progress),
         patch("app.dashboard.st.empty", return_value=mock_empty),
         patch("app.dashboard.time.perf_counter", return_value=0.0),
     ):
-        return _run_with_progress(runner, task, model_keys, documents)
+        return _run_with_progress(runner, task, model_keys, documents, config)
 
 
-def test_run_with_progress_calls_runner_per_model():
+def test_run_with_progress_on_complete_attaches_streamlit_context():
+    """Parallel model workers must attach script ctx before Streamlit UI calls."""
+    from app.dashboard import _run_with_progress
+
+    model_keys = ["model-a", "model-b"]
+    documents = [_make_doc_input("d1")]
+    mock_progress = MagicMock()
+    mock_empty = MagicMock()
+    config = {"evaluation": {"metrics": {"summarisation": ["rouge"]}}}
+
+    captured_callback = {}
+
+    def fake_run(**kwargs):
+        captured_callback["fn"] = kwargs["on_complete"]
+        return BenchmarkReport(
+            task="summarisation",
+            sample_size=1,
+            results=[_make_single_model_report("model-a", n_docs=1).results[0]],
+            prompt_version="1",
+        )
+
+    runner = MagicMock()
+    runner.run.side_effect = fake_run
+    fake_ctx = object()
+
+    with (
+        patch("app.dashboard.st.progress", return_value=mock_progress),
+        patch("app.dashboard.st.empty", return_value=mock_empty),
+        patch("app.dashboard.get_script_run_ctx", return_value=fake_ctx),
+        patch("app.dashboard.add_script_run_ctx") as add_ctx,
+        patch("app.dashboard.time.perf_counter", return_value=0.0),
+    ):
+        _run_with_progress(runner, "summarisation", model_keys, documents, config)
+        on_complete = captured_callback["fn"]
+        on_complete("model-a", 1.5)
+
+    add_ctx.assert_called_once()
+    assert add_ctx.call_args[0][1] is fake_ctx
+    mock_empty.markdown.assert_called()
+
+
+def test_run_with_progress_calls_runner_once_with_all_models():
     model_keys = ["model-a", "model-b"]
     documents = [_make_doc_input("d1"), _make_doc_input("d2"), _make_doc_input("d3")]
 
     runner = MagicMock()
-    runner.run.side_effect = [
-        _make_single_model_report("model-a", n_docs=3),
-        _make_single_model_report("model-b", n_docs=3),
-    ]
+    runner.run.return_value = BenchmarkReport(
+        task="summarisation",
+        sample_size=3,
+        results=[
+            _make_single_model_report("model-a", n_docs=3).results[0],
+            _make_single_model_report("model-b", n_docs=3).results[0],
+        ],
+        prompt_version="1",
+    )
 
     report = _run_progress_patched(runner, "summarisation", model_keys, documents)
 
-    assert runner.run.call_count == 2
-    runner.run.assert_any_call(
-        task="summarisation", model_keys=["model-a"], sample_size=3, documents=documents
-    )
-    runner.run.assert_any_call(
-        task="summarisation", model_keys=["model-b"], sample_size=3, documents=documents
-    )
+    runner.run.assert_called_once()
+    call_kwargs = runner.run.call_args.kwargs
+    assert call_kwargs["model_keys"] == model_keys
+    assert call_kwargs["documents"] == documents
+    assert call_kwargs["sample_size"] == 3
+    assert callable(call_kwargs["on_complete"])
     assert len(report.results) == 2
     assert report.task == "summarisation"
     assert report.sample_size == 3
@@ -308,9 +433,84 @@ def test_run_with_progress_combines_results():
     documents = [_make_doc_input(f"d{i}") for i in range(3)]
 
     runner = MagicMock()
-    runner.run.side_effect = [_make_single_model_report(k, n_docs=3) for k in model_keys]
+    runner.run.return_value = BenchmarkReport(
+        task="summarisation",
+        sample_size=3,
+        results=[_make_single_model_report(k, n_docs=3).results[0] for k in model_keys],
+        prompt_version="2",
+    )
 
     report = _run_progress_patched(runner, "summarisation", model_keys, documents)
 
     assert len(report.results) == 3
     assert [r.model_key for r in report.results] == model_keys
+    assert report.prompt_version == "2"
+
+
+# ---------------------------------------------------------------------------
+# Unit: run history helpers
+# ---------------------------------------------------------------------------
+
+def test_top_metric_scores_picks_best_per_metric():
+    from app.dashboard import _top_metric_scores
+
+    report = BenchmarkReport(
+        task="summarisation",
+        sample_size=3,
+        results=[
+            ModelBenchmarkResult(
+                model_key="a",
+                model_id="org/a",
+                quality_metrics={"rouge": 0.3, "bertscore": 0.8},
+                n_docs=3,
+            ),
+            ModelBenchmarkResult(
+                model_key="b",
+                model_id="org/b",
+                quality_metrics={"rouge": 0.5, "bertscore": 0.7},
+                n_docs=3,
+            ),
+        ],
+    )
+    scores = _top_metric_scores(report)
+    assert scores["ROUGE-L"] == pytest.approx(0.5)
+    assert scores["BERTScore"] == pytest.approx(0.8)
+
+
+def test_make_history_entry_fields():
+    from app.dashboard import _make_history_entry
+
+    report = _make_report()
+    entry = _make_history_entry(report, ["m1", "m2"], "3")
+
+    assert entry["task"] == "summarisation"
+    assert entry["models"] == ["m1", "m2"]
+    assert entry["prompt_version"] == "3"
+    assert entry["report"] is report
+    assert "BERTScore" in entry["top_scores"]
+
+
+def test_append_run_history_keeps_max_five():
+    from app.dashboard import _append_run_history, _make_history_entry
+
+    fake_state: dict = {}
+    with patch("app.dashboard.st.session_state", fake_state):
+        for i in range(7):
+            report = BenchmarkReport(task="translation", sample_size=1, results=[])
+            _append_run_history(_make_history_entry(report, [f"m{i}"], "1"))
+
+    assert len(fake_state["_run_history"]) == 5
+    assert fake_state["_run_history"][0]["models"] == ["m6"]
+
+
+def test_history_button_label_truncates_models():
+    from app.dashboard import _history_button_label
+
+    entry = {
+        "timestamp": "2026-07-06T10:00:00+00:00",
+        "task": "translation",
+        "models": ["a", "b", "c", "d"],
+    }
+    label = _history_button_label(entry)
+    assert "translation" in label
+    assert "+2" in label

@@ -7,11 +7,13 @@ from pathlib import Path
 import pytest
 
 from src.core.provenance import (
+    compute_run_fingerprint,
     config_hash,
     config_snapshot,
     dataset_hash,
     file_hash,
     ground_truth_hash,
+    selection_hash,
 )
 
 
@@ -179,3 +181,87 @@ def test_config_hash_changes_when_temperature_changes(sample_config):
     h_en = config_hash(sample_config, "gemini-flash")
     h_fr = config_hash(config_hot, "gemini-flash")
     assert h_en != h_fr
+
+
+# ─────────────────────────────────────────────────────
+# selection_hash
+# ─────────────────────────────────────────────────────
+
+def test_selection_hash_is_12_hex_chars():
+    h = selection_hash("summarisation", ["cnn_dm_0000", "cnn_dm_0001"])
+    assert len(h) == 12
+    assert all(c in "0123456789abcdef" for c in h)
+
+
+def test_selection_hash_order_independent():
+    h1 = selection_hash("summarisation", ["a", "b", "c"])
+    h2 = selection_hash("summarisation", ["c", "a", "b"])
+    assert h1 == h2
+
+
+def test_selection_hash_task_scoped():
+    h_sum = selection_hash("summarisation", ["doc_0"])
+    h_tra = selection_hash("translation", ["doc_0"])
+    assert h_sum != h_tra
+
+
+def test_selection_hash_stable_across_calls():
+    h1 = selection_hash("translation", ["ep_0000", "ep_0001"])
+    h2 = selection_hash("translation", ["ep_0000", "ep_0001"])
+    assert h1 == h2
+
+
+def test_selection_hash_differs_for_different_docs():
+    h1 = selection_hash("summarisation", ["d0", "d1"])
+    h2 = selection_hash("summarisation", ["d0", "d2"])
+    assert h1 != h2
+
+
+# ─────────────────────────────────────────────────────
+# compute_run_fingerprint
+# ─────────────────────────────────────────────────────
+
+def test_run_fingerprint_is_16_hex_chars():
+    fp = compute_run_fingerprint(
+        task="summarisation",
+        model_keys=["gemini-flash"],
+        sel_hash="a3f9c2e1b847",
+        prompt_version="3",
+    )
+    assert len(fp) == 16
+    assert all(c in "0123456789abcdef" for c in fp)
+
+
+def test_run_fingerprint_stable():
+    kwargs = dict(task="summarisation", model_keys=["m1"], sel_hash="abc", prompt_version="2")
+    assert compute_run_fingerprint(**kwargs) == compute_run_fingerprint(**kwargs)
+
+
+def test_run_fingerprint_model_order_independent():
+    fp1 = compute_run_fingerprint("summarisation", ["m1", "m2"], "abc", "2")
+    fp2 = compute_run_fingerprint("summarisation", ["m2", "m1"], "abc", "2")
+    assert fp1 == fp2
+
+
+def test_run_fingerprint_changes_on_prompt_version():
+    fp_v2 = compute_run_fingerprint("summarisation", ["m1"], "abc", "2")
+    fp_v3 = compute_run_fingerprint("summarisation", ["m1"], "abc", "3")
+    assert fp_v2 != fp_v3
+
+
+def test_run_fingerprint_changes_on_selection_hash():
+    fp1 = compute_run_fingerprint("summarisation", ["m1"], "aaa111bbb222", "2")
+    fp2 = compute_run_fingerprint("summarisation", ["m1"], "xxx999yyy888", "2")
+    assert fp1 != fp2
+
+
+def test_run_fingerprint_changes_on_task():
+    fp_s = compute_run_fingerprint("summarisation", ["m1"], "abc", "2")
+    fp_t = compute_run_fingerprint("translation", ["m1"], "abc", "2")
+    assert fp_s != fp_t
+
+
+def test_run_fingerprint_changes_on_skip_extraction():
+    fp_on  = compute_run_fingerprint("summarisation", ["m1"], "abc", "2", skip_extraction=True)
+    fp_off = compute_run_fingerprint("summarisation", ["m1"], "abc", "2", skip_extraction=False)
+    assert fp_on != fp_off
