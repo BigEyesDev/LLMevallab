@@ -199,22 +199,22 @@ def test_model_colors_wraps_palette():
 
 
 # ---------------------------------------------------------------------------
-# Unit: _cache_key — deterministic regardless of order
+# Unit: _run_fingerprint — deterministic regardless of order
 # ---------------------------------------------------------------------------
 
 def test_cache_key_order_independent():
-    from app.dashboard import _cache_key
+    from app.dashboard import _run_fingerprint
     assert (
-        _cache_key("summarisation", ["b", "a"], ["d2", "d1"])
-        == _cache_key("summarisation", ["a", "b"], ["d1", "d2"])
+        _run_fingerprint("summarisation", ["b", "a"], ["d2", "d1"], "3")
+        == _run_fingerprint("summarisation", ["a", "b"], ["d1", "d2"], "3")
     )
 
 
 def test_cache_key_differs_by_task():
-    from app.dashboard import _cache_key
+    from app.dashboard import _run_fingerprint
     assert (
-        _cache_key("translation", ["m"], ["d1"])
-        != _cache_key("summarisation", ["m"], ["d1"])
+        _run_fingerprint("translation", ["m"], ["d1"], "3")
+        != _run_fingerprint("summarisation", ["m"], ["d1"], "3")
     )
 
 

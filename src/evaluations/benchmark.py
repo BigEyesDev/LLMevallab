@@ -197,11 +197,20 @@ class BenchmarkRunner:
         for model_key in model_keys:
             validate_model_key(model_key, self.config)
 
-        # REGISTRY_HOOK: register_or_get(task, doc_ids) → document_set_name, selection_hash
-        # REGISTRY_HOOK: run_fingerprint(...) → check cache before API calls
-
         if documents is None:
             documents = load_documents_for_task(task, self.config, sample_size)
+
+        # Register (or look up) this (task, doc_ids) pair in the DocumentSet registry.
+        from src.pipeline.document_sets import register_or_get as _register_doc_set
+        doc_ids = [d.doc_id for d in documents]
+        try:
+            doc_set = _register_doc_set(task.value, doc_ids)
+            document_set_name = doc_set.set_name
+            sel_hash = doc_set.selection_hash
+        except Exception as exc:
+            logger.warning("DocumentSet registry update failed (non-fatal): %s", exc)
+            document_set_name = ""
+            sel_hash = ""
 
         concurrency = get_concurrency_settings(self.config)
         max_models = concurrency.max_concurrent_models
@@ -219,6 +228,8 @@ class BenchmarkRunner:
                         documents,
                         provider_limiter=provider_limiter,
                         skip_extraction=skip_extraction,
+                        document_set_name=document_set_name,
+                        selection_hash=sel_hash,
                     )
                 )
                 if on_complete:
@@ -232,6 +243,8 @@ class BenchmarkRunner:
                     documents,
                     provider_limiter=provider_limiter,
                     skip_extraction=skip_extraction,
+                    document_set_name=document_set_name,
+                    selection_hash=sel_hash,
                 )
                 if on_complete:
                     on_complete(model_key, time.perf_counter() - t0)
@@ -244,6 +257,9 @@ class BenchmarkRunner:
             sample_size=len(documents),
             results=model_results,
             prompt_version=prompt_version,
+            doc_ids=doc_ids,
+            document_set_name=document_set_name,
+            selection_hash=sel_hash,
         )
 
     def _benchmark_single_model(
@@ -254,6 +270,8 @@ class BenchmarkRunner:
         *,
         provider_limiter: ProviderLimiter | None = None,
         skip_extraction: bool | None = None,
+        document_set_name: str = "",
+        selection_hash: str = "",
     ) -> ModelBenchmarkResult:
         """Run pipeline + evaluation for one catalog model."""
         catalog = get_model_catalog(self.config)
@@ -271,6 +289,8 @@ class BenchmarkRunner:
             prompt_version=prompt_version,
             provider_limiter=provider_limiter,
             skip_extraction=skip_extraction,
+            document_set_name=document_set_name,
+            selection_hash=selection_hash,
         )
         pipeline_results = orchestrator.run(documents)
         evaluation_report = Evaluator(self.config).run_on_results(

@@ -84,6 +84,58 @@ def config_hash(config: dict, model_key: str) -> str:
     return f"sha256:{digest}"
 
 
+def selection_hash(task: str, doc_ids: list[str]) -> str:
+    """12-hex-char content address for a (task, doc_ids) selection.
+
+    Canonical form: sha256 of ``"{task}\\n{sorted_doc_ids joined by newlines}"``
+    → first 12 hex characters.
+
+    Properties:
+    * Order-independent — same 10 docs in any order → same hash.
+    * Task-scoped — same docs under "summarisation" vs "translation" differ.
+    * Stable across runs and days — use as the identity key in the registry.
+    """
+    canonical = task + "\n" + "\n".join(sorted(doc_ids))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return digest[:12]
+
+
+def compute_run_fingerprint(
+    task: str,
+    model_keys: list[str],
+    sel_hash: str,
+    prompt_version: str,
+    judge_model_key: str | None = None,
+    skip_extraction: bool = False,
+) -> str:
+    """16-hex-char fingerprint that uniquely identifies a benchmark run.
+
+    Used as the session cache key in the dashboard.  Any change to inputs
+    produces a different fingerprint and triggers a fresh API run.
+
+    Args:
+        task:             Pipeline task name (e.g. ``'summarisation'``).
+        model_keys:       Catalog keys of models being benchmarked.
+        sel_hash:         12-char ``selection_hash`` of the document set.
+        prompt_version:   Prompt template version string (e.g. ``'3'``).
+        judge_model_key:  LLM judge model key, or ``None`` / ``""`` when unused.
+        skip_extraction:  Whether the extract step was skipped.
+
+    Returns:
+        First 16 hex chars of sha256 over the canonical payload.
+    """
+    payload = {
+        "task": task,
+        "model_keys": sorted(model_keys),
+        "selection_hash": sel_hash,
+        "prompt_version": str(prompt_version),
+        "judge_model_key": judge_model_key or "",
+        "skip_extraction": skip_extraction,
+    }
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
 def config_snapshot(config: dict, model_key: str) -> dict:
     """Returns the task-relevant config slice stored in the manifest.
 

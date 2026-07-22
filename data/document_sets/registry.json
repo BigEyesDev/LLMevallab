@@ -1,0 +1,27 @@
+{
+  "lemon_stem": {
+    "set_name": "lemon_stem",
+    "selection_hash": "1e42b0b994a6",
+    "task": "translation",
+    "doc_ids": [
+      "doc-1"
+    ],
+    "data_source": "benchmark_samples",
+    "n_docs": 1,
+    "created_at": "2026-07-08T21:09:46.783399+00:00",
+    "last_used_at": "2026-07-08T21:10:14.513933+00:00"
+  },
+  "wild_trail": {
+    "set_name": "wild_trail",
+    "selection_hash": "cee6fae26806",
+    "task": "translation",
+    "doc_ids": [
+      "doc-1",
+      "doc-2"
+    ],
+    "data_source": "benchmark_samples",
+    "n_docs": 2,
+    "created_at": "2026-07-08T21:09:49.230730+00:00",
+    "last_used_at": "2026-07-08T21:10:17.024634+00:00"
+  }
+}

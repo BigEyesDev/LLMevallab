@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
 from src.core.config import get_concurrency_settings, get_model_catalog, get_processed_path, load_config
+from src.core.provenance import compute_run_fingerprint, selection_hash as _selection_hash
 from src.core.models import BenchmarkReport, DocumentInput, ModelBenchmarkResult
 from src.evaluations.benchmark import BenchmarkRunner
 from src.evaluations.metric_registry import (
@@ -26,6 +27,7 @@ from src.evaluations.metric_registry import (
     quality_context,
 )
 from src.pipeline.benchmark_sample_loader import BenchmarkSampleLoader
+from src.pipeline.document_sets import DocumentSet, load_registry, lookup_by_hash
 from src.pipeline.orchestrator import PipelineTask, load_prompts
 from src.pipeline.prompt_manager import (
     get_prompt_version,
@@ -190,13 +192,25 @@ def _get_selected_docs(all_docs: list[dict]) -> list[dict]:
     return [d for d in all_docs if st.session_state.get(f"_doc_cb_{d['doc_id']}", False)]
 
 
-def _cache_key(task: str, model_keys: list[str], doc_ids: list[str]) -> tuple:
-    return (task, tuple(sorted(model_keys)), tuple(sorted(doc_ids)))
+def _run_fingerprint(
+    task: str,
+    model_keys: list[str],
+    doc_ids: list[str],
+    prompt_version: str,
+) -> str:
+    """Stable cache key covering task, models, document selection, and prompt version."""
+    sel_hash = _selection_hash(task, doc_ids)
+    return compute_run_fingerprint(
+        task=task,
+        model_keys=model_keys,
+        sel_hash=sel_hash,
+        prompt_version=str(prompt_version),
+    )
 
 
 def _clear_run_state() -> None:
     """Drop stored results so the pre-run setup view is shown again."""
-    for key in ("report", "report_task", "_from_cache"):
+    for key in ("report", "report_task", "_from_cache", "_restored_set_name", "_restored_sel_hash"):
         st.session_state.pop(key, None)
 
 
@@ -406,6 +420,51 @@ def _sidebar_run_history() -> None:
                 )
 
 
+def _sidebar_saved_doc_sets(all_docs: list[dict], task: str) -> None:
+    """Sidebar expander — saved document sets from the registry, restore on click."""
+    try:
+        registry = load_registry()
+    except Exception:
+        return
+
+    task_sets = [ds for ds in registry.values() if ds.task == task]
+    if not task_sets:
+        return
+
+    task_sets.sort(key=lambda ds: ds.last_used_at, reverse=True)
+    all_doc_ids = {d["doc_id"] for d in all_docs}
+
+    with st.sidebar:
+        st.divider()
+        with st.expander("Saved document sets", expanded=False):
+            st.caption("Previously benchmarked selections — click **Use** to restore.")
+            for ds in task_sets:
+                missing = [did for did in ds.doc_ids if did not in all_doc_ids]
+                col_name, col_btn = st.columns([3, 1])
+                col_name.markdown(
+                    f"**{ds.set_name}**  \n"
+                    f"`{ds.selection_hash}` · {ds.n_docs} docs"
+                )
+                if missing:
+                    col_name.caption(f"⚠️ {len(missing)} doc(s) missing from current dataset")
+                btn_disabled = bool(missing)
+                if col_btn.button(
+                    "Use",
+                    key=f"_docset_use_{ds.set_name}",
+                    use_container_width=True,
+                    disabled=btn_disabled,
+                    help=f"Restore selection: {', '.join(ds.doc_ids[:3])}{'…' if len(ds.doc_ids) > 3 else ''}",
+                ):
+                    target_ids = set(ds.doc_ids)
+                    for doc in all_docs:
+                        st.session_state[f"_doc_cb_{doc['doc_id']}"] = (
+                            doc["doc_id"] in target_ids
+                        )
+                    st.session_state["_restored_set_name"] = ds.set_name
+                    st.session_state["_restored_sel_hash"] = ds.selection_hash
+                    st.rerun()
+
+
 def _sidebar_run_button(model_keys: list[str]) -> bool:
     with st.sidebar:
         return st.button(
@@ -518,7 +577,7 @@ def _render_pre_run(
         .get("max_document_length_per_task", {})
         .get(task, config.get("pipeline", {}).get("max_document_length", 2000))
     )
-    _render_doc_grid(all_docs, sample_size, meta, truncation_limit, model_keys, catalog)
+    _render_doc_grid(all_docs, sample_size, meta, truncation_limit, model_keys, catalog, task=task)
 
 
 def _render_doc_grid(
@@ -528,11 +587,31 @@ def _render_doc_grid(
     truncation_limit: int,
     model_keys: list[str],
     catalog: dict,
+    task: str = "",
 ) -> None:
     """Render an interactive card grid for selecting which docs to benchmark."""
     n_selected = sum(
         1 for d in all_docs if st.session_state.get(f"_doc_cb_{d['doc_id']}", False)
     )
+
+    # Document set banner — shown when the current selection matches a saved set
+    restored_name = st.session_state.get("_restored_set_name", "")
+    restored_hash = st.session_state.get("_restored_sel_hash", "")
+    if not restored_name and task and n_selected > 0:
+        current_ids = [d["doc_id"] for d in all_docs if st.session_state.get(f"_doc_cb_{d['doc_id']}", False)]
+        try:
+            matched = lookup_by_hash(_selection_hash(task, current_ids))
+            if matched:
+                restored_name = matched.set_name
+                restored_hash = matched.selection_hash
+        except Exception:
+            pass
+    if restored_name:
+        st.info(
+            f"Document set **{restored_name}** (`{restored_hash}`) — "
+            f"{n_selected} docs restored. Pick models, then Run.",
+            icon="📂",
+        )
 
     # Header + quick-action buttons
     st.markdown("#### Select documents to benchmark")
@@ -914,15 +993,18 @@ def main() -> None:
     selected_docs = _get_selected_docs(all_docs)
 
     # ── Handle Run ──────────────────────────────────────────────────────────
+    current_prompt_version = get_prompt_version(prompts)
     if run_clicked and model_keys and selected_docs:
-        cache_key = _cache_key(task, model_keys, [d["doc_id"] for d in selected_docs])
+        doc_ids_selected = [d["doc_id"] for d in selected_docs]
+        cache_key = _run_fingerprint(task, model_keys, doc_ids_selected, current_prompt_version)
         cached = st.session_state.get("_run_cache", {}).get(cache_key)
 
         if cached:
             st.session_state["report"] = cached
             st.session_state["report_task"] = task
             st.session_state["_from_cache"] = True
-            st.toast("Loaded from cache — same docs & models.", icon="💾")
+            set_hint = f" ({cached.document_set_name})" if cached.document_set_name else ""
+            st.toast(f"Loaded from cache — same docs & models{set_hint}.", icon="💾")
         else:
             doc_inputs = [DocumentInput(**d) for d in selected_docs]
             runner = BenchmarkRunner(config=config, prompts=prompts)
@@ -943,6 +1025,7 @@ def main() -> None:
         st.warning("No documents selected — check at least one doc in the grid below.", icon="⚠️")
 
     _sidebar_run_history()
+    _sidebar_saved_doc_sets(all_docs, task)
 
     # Render after run handler so enabled state reflects results stored this pass.
     _sidebar_configure_button()
@@ -961,11 +1044,14 @@ def main() -> None:
     prompt_badge = (
         f"  ·  prompt v{report.prompt_version}" if report.prompt_version else ""
     )
+    set_badge = (
+        f"  ·  set **{report.document_set_name}**" if report.document_set_name else ""
+    )
     selected_ids = _selected_doc_ids(all_docs)
 
     st.subheader(
         f"Results — task: {report.task}  ·  {report.sample_size} docs"
-        f"{prompt_badge}{cache_badge}"
+        f"{prompt_badge}{set_badge}{cache_badge}"
     )
     with st.expander(
         f"Change document selection & re-run ({len(selected_ids)} docs selected)",

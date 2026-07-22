@@ -141,21 +141,25 @@ class PipelineOrchestrator:
         prompt_version: str | None = None,
         provider_limiter: ProviderLimiter | None = None,
         skip_extraction: bool | None = None,
+        document_set_name: str = "",
+        selection_hash: str = "",
     ):
         """
         Args:
-            processor:          Any BaseDocumentProcessor implementation.
-            config:             Loaded config.yaml dict.
-            task:               Controls which pipeline steps run — see PipelineTask.
-            model_key:          Catalog key (e.g. 'gemini-2.5-flash') — used for
-                                config hashing in the manifest.  Optional for
-                                backward-compatibility; omit in BenchmarkRunner paths
-                                that do not need strict manifest hash tracking.
-            dataset_path:       Path to the input documents JSON — stored in
-                                manifest and hashed.  Optional for backward-compat.
-            ground_truth_path:  Path to the ground truth dataset JSON — stored in
-                                manifest and hashed.  Defaults to ``dataset_path``
-                                when both point to the same file (our current loaders).
+            processor:           Any BaseDocumentProcessor implementation.
+            config:              Loaded config.yaml dict.
+            task:                Controls which pipeline steps run — see PipelineTask.
+            model_key:           Catalog key (e.g. 'gemini-2.5-flash') — used for
+                                 config hashing in the manifest.  Optional for
+                                 backward-compatibility; omit in BenchmarkRunner paths
+                                 that do not need strict manifest hash tracking.
+            dataset_path:        Path to the input documents JSON — stored in
+                                 manifest and hashed.  Optional for backward-compat.
+            ground_truth_path:   Path to the ground truth dataset JSON — stored in
+                                 manifest and hashed.  Defaults to ``dataset_path``
+                                 when both point to the same file (our current loaders).
+            document_set_name:   Human-readable set name from the DocumentSet registry.
+            selection_hash:      12-char content hash of task + doc_ids selection.
         """
         self.processor = processor
         self.config = config
@@ -165,6 +169,8 @@ class PipelineOrchestrator:
         self.ground_truth_path = ground_truth_path or dataset_path
         self.prompt_version = prompt_version
         self.provider_limiter = provider_limiter
+        self.document_set_name = document_set_name
+        self.selection_hash = selection_hash
         self._provider_type = processor.config.get("provider_type", "")
         concurrency = get_concurrency_settings(config)
         self.skip_extraction = (
@@ -448,6 +454,8 @@ class PipelineOrchestrator:
             config_hash=c_hash,
             config_snapshot=c_snapshot,
             results_path=str(results_path.resolve()),
+            document_set_name=self.document_set_name,
+            selection_hash=self.selection_hash,
             created_at=utc_now_iso(),
         )
 
