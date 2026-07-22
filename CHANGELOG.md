@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-22
+
+### Added — Document sets, run fingerprint, and durable run history
+
+- **`src/pipeline/document_sets.py`** — content-addressed document-set registry (`selection_hash` + auto names like `lemon_stem`).
+- **`compute_run_fingerprint()`** — dashboard cache key includes task, models, selection hash, prompt version, and skip-extraction so prompt edits cannot serve stale scores.
+- **`src/pipeline/run_history.py`** — persisted run-history helpers for the dashboard sidebar.
+- **`RunManifest` / `BenchmarkReport`** — `document_set_name` and `selection_hash` fields for provenance.
+- **`scripts/evaluate_today_runs.py`** — batch-evaluate today's pipeline results with optional light/resume modes.
+- **Tests** — `tests/test_document_sets.py`, `tests/test_run_history.py`, expanded provenance and dashboard tests.
+
 ### Added — Parallel benchmark orchestration
 
 - **`src/core/concurrency.py`** — `ConcurrencySettings`, `ProviderLimiter`, `run_in_parallel()` for bounded I/O parallelism.
@@ -17,7 +28,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Dashboard** — single `BenchmarkRunner.run()` with `on_complete` progress; concurrency caption in sidebar.
 - **CLI overrides** — `--max-concurrent-models`, `--max-concurrent-documents`, `--skip-extract`.
 - **`tests/test_concurrency.py`**, **`tests/test_orchestrator_parallel.py`**; updated benchmark, metrics, dashboard tests.
-- **Learning doc** — `docs/learning/PARALLEL_ORCHESTRATION.md` (local); Article 5 stub in `files/SUBSTACK_ARTICLE_BRIEF.md` §6.
 
 ### Fixed — Parallel dashboard + Jul 2026 model catalog
 

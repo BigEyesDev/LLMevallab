@@ -4,7 +4,7 @@
 
 **Author:** [Akash Sachdeva (@BigEyesDev)](https://github.com/BigEyesDev)
 
-**Version:** `0.3.1` — see [CHANGELOG.md](CHANGELOG.md) and [docs/VERSIONING.md](docs/VERSIONING.md).
+**Version:** `0.4.0` — see [CHANGELOG.md](CHANGELOG.md) and [docs/VERSIONING.md](docs/VERSIONING.md).
 
 ---
 
