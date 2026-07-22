@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-**Patch version bumps** (`0.1.1`, `0.1.2`, …) happen when each feature branch merges to `dev` — see [docs/VERSIONING.md](docs/VERSIONING.md).
+**Patch version bumps** (`0.1.1`, `0.1.2`, …) happen when each feature branch merges to `dev`.
 
 ## [Unreleased]
 

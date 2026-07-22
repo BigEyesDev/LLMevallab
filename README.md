@@ -4,7 +4,7 @@
 
 **Author:** [Akash Sachdeva (@BigEyesDev)](https://github.com/BigEyesDev)
 
-**Version:** `0.4.0` — see [CHANGELOG.md](CHANGELOG.md) and [docs/VERSIONING.md](docs/VERSIONING.md).
+**Version:** `0.4.0` — see [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -189,5 +189,4 @@ tests/                        ← pytest suite
 
 - [RUNBOOK.md](RUNBOOK.md) — operations and troubleshooting
 - [docs/MODELS.md](docs/MODELS.md) — model quirks and smoke-test notes
-- [docs/VERSIONING.md](docs/VERSIONING.md) — package vs prompt versioning
 - [CHANGELOG.md](CHANGELOG.md) — release history
